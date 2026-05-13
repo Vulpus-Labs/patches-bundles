@@ -1,0 +1,83 @@
+# soft_pad.patches — soft DCO-style polyphonic pad
+#
+# Two detuned sawtooth oscillators per voice + square sub, gentle resonant
+# lowpass with slow filter envelope, BBD stereo chorus, short stereo delay,
+# and a plate-style reverb. Chorus does most of the stereo width work.
+
+patch {
+    module kbd       : PolyMidiToCv
+    module osc_a     : PolyOsc { frequency: -0.004 }
+    module osc_b     : PolyOsc { frequency:  0.004 }
+    module sub       : PolyOsc { frequency: -1.0 }
+    module mix       : PolySum(3)
+
+    module amp_env   : PolyAdsr { attack: 0.35, decay: 0.4, sustain: 0.85, release: 1.2 }
+    module filt_env  : PolyAdsr { attack: 0.6,  decay: 0.9, sustain: 0.5,  release: 1.0 }
+
+    module filt      : PolyLowpass { cutoff: 900.0Hz, resonance: 0.25, saturate: true }
+    module vca       : PolyVca
+    module collapse  : PolyToMono
+
+    # Keyboard → oscillators
+    kbd.voct -> osc_a.voct
+    kbd.voct -> osc_b.voct
+    kbd.voct -> sub.voct
+
+    # Oscillator blend: two detuned saws + square sub-octave
+    osc_a.sawtooth -[0.45]-> mix.in[0]
+    osc_b.sawtooth -[0.45]-> mix.in[1]
+    sub.square     -[0.25]-> mix.in[2]
+
+    # Amplitude envelope
+    kbd.trigger -> amp_env.trigger
+    kbd.gate    -> amp_env.gate
+    amp_env.out -> vca.cv
+
+    # Filter envelope sweeps cutoff gently upward
+    kbd.trigger -> filt_env.trigger
+    kbd.gate    -> filt_env.gate
+    filt_env.out -[0.35]-> filt.voct
+
+    mix.out     -> vca.in
+    vca.out     -> filt.in
+    filt.out    -> collapse.in
+
+    # --- FX chain ------------------------------------------------------
+    # BBD chorus
+    module chorus : VChorus {
+        mode: two
+        variant: bright
+        hiss: 0.35
+    }
+
+    collapse.out -[0.22]-> chorus.in
+
+    # Short BBD delay for air, low feedback (one per side)
+    module delay_l : VBbd(1) {
+        dry_wet: 0.4,
+        delay_ms[0]: 200,
+        gain[0]: 1.0,
+        feedback[0]: 0.3
+    }
+    module delay_r : VBbd(1) {
+        dry_wet: 0.4,
+        delay_ms[0]: 150,
+        gain[0]: 1.0,
+        feedback[0]: 0.3
+    }
+    chorus.out  -> delay_l.in
+
+    # Plate-ish reverb tail
+    module reverb : VReverb {
+        dry_wet: 0.35
+        size: 0.75
+        decay: 0.85
+    }
+    delay_l.out -> reverb.in
+
+    module lim : StereoLimiter
+    module out : AudioOut
+
+    reverb.out  -> lim.in
+    lim.out  -> out.in
+}

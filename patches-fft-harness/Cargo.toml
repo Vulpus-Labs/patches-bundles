@@ -1,0 +1,20 @@
+[package]
+name = "patches-fft-harness"
+description = "FFT-based DSP harness (slot deck, window buffer, partitioned convolution, spectral pitch shift) for the Patches modular-audio framework."
+keywords = ["audio", "dsp", "fft", "convolution", "pitch-shift"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+patches-core = { workspace = true }
+patches-dsp = { workspace = true }
+rtrb = { workspace = true }
+
+[lib]
+name = "patches_fft_harness"
+path = "src/lib.rs"
+doctest = false

@@ -1,0 +1,206 @@
+# split_pad_lead.patches — keyboard split at C4.
+#
+# Notes < C4 feed a warm supporting pad (poly, VPolyLadder, dark chorus).
+# Notes >= C4 feed a prominent mono lead (VDco, VLadder, glide, flanger).
+#
+#                       ┌──► low  ──► PolyMidiToCv ──► pad_voice ──┐
+#   MidiIn ──► MidiSplit┤                                           ├──► mix ──► VReverb ──► out
+#                       └──► high ──► MidiToCv     ──► lead_voice ─┘
+#
+# MidiSplit passes the MIDI through on the side matching the note; downstream
+# MidiToCv / PolyMidiToCv read that cable (ADR 0048 fallback) instead of
+# the global backplane.
+
+template pad_voice(
+    cutoff:  float = 200.0,
+    env_amt: float = 2.4,
+    attack:  float = 1.4,
+    release: float = 2.6,
+) {
+    in:  voct, trigger, gate
+    out: audio
+
+    module dco : VPolyDco {
+        saw_gain:      0.8
+        triangle_gain: 0.5
+        sub_gain:      0.55
+        pulse_gain:    0.0
+        curve:         0.35
+    }
+
+    module lfo : PolyLfo { rate: 0.12, mode: bipolar, spread: 0.5 }
+    lfo.triangle -[0.15]-> dco.pwm
+
+    module env : PolyAdsr {
+        attack:  <attack>
+        decay:   1.0
+        sustain: 0.75
+        release: <release>
+        shape:   exponential
+    }
+
+    module vcf : VPolyLadder {
+        variant:   smooth
+        cutoff:    <cutoff>
+        resonance: 0.22
+        drive:     1.05
+    }
+
+    module cut_mod : PolySum([env, lfo])
+    env.out      -[<env_amt>]-> cut_mod.in[env]
+    lfo.triangle -[0.25]-> cut_mod.in[lfo]
+
+    module vca : PolyVca
+
+    $.voct    -> dco.voct
+    $.trigger -> env.trigger
+    $.gate    -> env.gate
+
+    dco.out     -> vcf.in
+    cut_mod.out -> vcf.cutoff_cv
+    vcf.out     -> vca.in
+    env.out     -> vca.cv
+    vca.out     -> $.audio
+}
+
+template lead_voice(
+    cutoff:   float = 1100.0,
+    reso:     float = 0.45,
+    drive:    float = 2.4,
+    env_amt:  float = 3.5,
+    glide_ms:    float = 45.0,
+    slur_amount: float = 4.0,
+) {
+    in:  voct, trigger, gate, slur
+    out: audio
+
+    module glide : Glide { glide_ms: <glide_ms>, slur_amount: <slur_amount> }
+
+    module dco : VDco {
+        saw_gain:      1.0
+        pulse_gain:    0.0
+        triangle_gain: 0.3
+        sub_gain:      0.25
+        curve:         0.45
+    }
+
+    module env : Adsr {
+        attack:  0.01
+        decay:   0.2
+        sustain: 0.6
+        release: 0.3
+        shape:   exponential
+    }
+
+    module vcf : VLadder {
+        variant:   sharp
+        cutoff:    <cutoff>
+        resonance: <reso>
+        drive:     <drive>
+    }
+
+    module vca : Vca
+
+    $.voct -> glide.in
+    $.slur -> glide.slur_in
+    glide.out -> dco.voct
+
+    $.trigger -> env.trigger
+    $.gate    -> env.gate
+
+    dco.out -> vcf.in
+    env.out -[<env_amt>]-> vcf.cutoff_cv
+    vcf.out -> vca.in
+    env.out -> vca.cv
+    vca.out -> $.audio
+}
+
+patch {
+    module midi   : MidiIn
+    module split  : MidiSplit { split: 60 }
+
+    midi.midi -> split.midi
+
+    # Low side → pad (poly).
+    module pad_mts : PolyMidiToCv
+    split.low -> pad_mts.midi
+
+    module pad : pad_voice(cutoff: 190.0, env_amt: 2.6, attack: 1.6, release: 3.0)
+    pad_mts.voct    -> pad.voct
+    pad_mts.trigger -> pad.trigger
+    pad_mts.gate    -> pad.gate
+
+    module pad_mix : PolyToMono
+    pad.audio -> pad_mix.in
+
+    module chorus : VChorus { variant: dark, mode: both, hiss: 0.0, jitter: 0.15 }
+    pad_mix.out -[0.5]-> chorus.in
+
+    # High side → lead (mono).
+    module lead_mts : MidiToCv { legato: true }
+    split.high -> lead_mts.midi
+
+    module lead : lead_voice(cutoff: 1200.0, reso: 0.5, drive: 2.6, env_amt: 3.6, glide_ms: 55.0, slur_amount: 4.0)
+    lead_mts.voct    -> lead.voct
+    lead_mts.trigger -> lead.trigger
+    lead_mts.gate    -> lead.gate
+    lead_mts.slur    -> lead.slur
+
+    module flg : VFlanger {
+        rate_hz:   0.35
+        depth:     0.5
+        manual_ms: 1.6
+        feedback:  0.55
+        mix:       0.4
+        lf_bypass: true
+        jitter:    0.15
+    }
+
+    lead.audio -[0.75]-> flg.in
+
+    # Chorus outputs are stereo; split + sum to mono for the mixer channel
+    # so the pad sits as one pan-placed element.
+    module pad_split : StereoSplitter
+    module pad_sum   : Sum(2)
+    chorus.out -> pad_split.in
+    pad_split.out_left  -> pad_sum.in[0]
+    pad_split.out_right -> pad_sum.in[1]
+
+    # Stereo bus: pad panned a bit left, lead a bit right. Both go to
+    # send_a → VReverb (gentle, shared tail). Only the lead drives send_b
+    # into a stereo pair of VBbds for a widening analog delay.
+    module bus : StereoMixer([pad, lead]) {
+        @pad:  { level: 0.55, pan: -0.35, send_a: 0.35, send_b: 0.0  },
+        @lead: { level: 0.6,  pan:  0.3,  send_a: 0.3,  send_b: 0.2 },
+    }
+
+    pad_sum.out -[0.55]-> bus.in[pad]
+    flg.out              -> bus.in[lead]
+
+    # send_a — gentle shared VReverb.
+    module verb : VReverb {
+        dry_wet: 1.0
+        size:    0.55
+        decay:   0.45
+        jitter:  0.1
+    }
+    bus.send_a -> verb.in
+    verb.out   -> bus.return_a
+
+    # send_b — stereo BBD delay, lead-only.
+    module bbd : VStereoBbd(1) {
+        dry_wet:  1.0
+        jitter:   0.2
+        delay_ms: 320
+        feedback: 0.4
+        pingpong: true
+    }
+    bus.send_b -> bbd.in
+    bbd.out    -> bus.return_b
+
+    module lim : StereoLimiter
+    bus.out -> lim.in
+
+    module out : AudioOut
+    lim.out -> out.in
+}

@@ -1,0 +1,136 @@
+# poly_synth.patches — 16-voice polyphonic sawtooth synth with ADSR amplitude and filter shaping
+#
+# Voice architecture:
+#   kbd        — PolyMidiToCv with LIFO voice stealing (8 voices from poly_voices)
+#   osc        — PolyOsc: one sawtooth per voice, driven by poly V/oct
+#   amp_env    — PolyAdsr: per-voice amplitude envelope
+#   vca        — PolyVca: shapes each voice's audio with its amplitude envelope
+#   filt_env   — PolyAdsr: per-voice filter cutoff envelope
+#   filt       — PolyLowpass: resonant lowpass filter, cutoff swept by filt_env
+#   mix        — PolySum (2 inputs): blends sawtooth + square from osc
+#   collapse   — PolyToMono: sums all voices to a single mono signal
+#   out        — AudioOut: stereo output
+#   vibrato    — Lfo: slow mono sine for phase modulation
+#   pm_spread  — MonoToPoly: broadcasts the LFO to all voices
+#
+# Signal flow:
+#
+#   kbd ──voct (poly)──→ osc ──sawtooth (poly)──→ mix.in[0]
+#                         └──→ osc ──square (poly)──→ mix.in[1]
+#
+#   vibrato ──sine──→ pm_spread ──out (poly)──→ osc.phase_mod
+#
+#   mix ──out (poly)──→ vca.in
+#
+#   kbd ──trigger (poly)──→ amp_env
+#   kbd ──gate (poly)────→ amp_env
+#   amp_env ──out (poly)──→ vca.cv
+#
+#   kbd ──trigger (poly)──→ filt_env
+#   kbd ──gate (poly)────→ filt_env
+#   filt_env ──out (poly)──→ filt.cutoff_cv   (sweeps cutoff from base up to ~4 kHz)
+#
+#
+# Hot-reload tips:
+#   - Adjust amp_env attack (try 0.002–0.05) for a harder or softer onset.
+#   - Lower amp_env sustain (try 0.3–0.5) for a more percussive character.
+#   - Increase amp_env release (try 0.5–1.5) for longer note tails.
+#   - Lower filt cutoff (try 300–600) for a darker base timbre.
+#   - Raise filt_env decay (try 0.5–1.5) for a slower filter sweep.
+#   - Add filt resonance (try 0.3–0.7) for extra bite at the cutoff.
+#   - Change the sawtooth scale to 0.3 and square to 0.7 for a harder timbre.
+#   - Swap PolyOsc output to sine for a clean, pad-like sound.
+#   - Widen vibrato depth (try 0.05–0.15) for more pronounced phase modulation.
+
+patch {
+    module kbd       : PolyMidiToCv
+    #module vibrato   : Lfo        { rate: 5.0 }
+    module pm_spread : MonoToPoly
+    module osc       : PolyOsc { fm_type: logarithmic }
+    module mix       : PolySum(2)
+    module amp_env   : PolyAdsr   { attack: 1.0, decay: 0.12,  sustain: 0.65, release: 0.4 }
+    module vca       : PolyVca
+    module filt_env  : PolyAdsr   { attack: 0.5,   decay: 0.25,  sustain: 0.3,  release: 0.4 }
+    module filt      : PolyLowpass { cutoff: 1000.0Hz, resonance: 0.9, saturate: true }
+    module collapse  : PolyToMono
+    module out       : AudioOut
+
+    # Vibrato LFO → phase modulation on all voices
+    #vibrato.sine   -[0.03]-> pm_spread.in
+    pm_spread.out         -> osc.phase_mod
+
+    # V/oct: keyboard → oscillator (all voices)
+    kbd.voct               -> osc.voct
+
+    # Oscillator mix: sawtooth (body) + square (edge)
+    osc.sawtooth       -[0.6]-> mix.in[0]
+    osc.triangle     -[0.4]-> mix.in[1]
+
+    module lfo: PolyLfo { rate: 1.0 }
+    kbd.trigger -> lfo.sync
+    lfo.triangle -[0.05s]-> osc.fm 
+    # Amplitude envelope: triggered and gated per voice
+    kbd.trigger            -> amp_env.trigger
+    kbd.gate               -> amp_env.gate
+
+    module down : PolyToMono
+
+    down.out -> ~meter+osc(mix)
+    # VCA: shaped audio per voice
+    mix.out                -> vca.in
+    amp_env.out            -> vca.cv, down.in
+
+    # Filter envelope: triggered and gated per voice
+    kbd.trigger            -> filt_env.trigger
+    kbd.gate               -> filt_env.gate
+
+    # Filter cutoff CV: base knob + envelope sweep, summed per-voice
+    module filt_sum : PolySum([base, env])
+    module filt_broadcast : MonoToPoly
+    # voct offset around the filter's 1000Hz base: -1 oct (500Hz) … +1 oct (2000Hz)
+    knob filter_base { low: -1.0, high: 1.0 }
+    ~filter_base -> filt_broadcast.in
+    filt_broadcast.out     -> filt_sum.in[base]
+    filt_env.out   -[0.7]-> filt_sum.in[env]
+    filt_sum.out           -> filt.voct
+
+    # Audio: VCA → filter
+    vca.out                -> filt.in
+
+    # Collapse all voices to mono
+    filt.out               -> collapse.in
+    collapse.out -> ~spectrum+meter+osc(synth)
+    
+    module chorus : VChorus {
+        mode: both
+        variant: dark
+        hiss: 1.0
+    }
+
+    module limit : Limiter
+
+    collapse.out -[0.12]-> limit.in
+
+    module reverb : VReverb {
+        dry_wet: 0.6
+        size: 1.0
+        decay: 0.4
+        damping: 0.8
+    }
+
+    module delay : VStereoBbd {
+        delay_ms: 100
+        feedback: 0.6
+        dry_wet: 1.0
+    }
+
+    knob delay_knob { low: 50, high: 200 }
+    ~delay_knob -[bi(1.0, 2.0)]-> delay.delay_cv, ~osc(delay_amount)
+    ~delay_knob -> ~osc(delay_knob)
+    
+    limit.out -> chorus.in
+    chorus.out -> delay.in[0]
+    delay.out[0]  -> reverb.in
+
+    reverb.out  -> out.in, ~stereo_meter(master)
+}

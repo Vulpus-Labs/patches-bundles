@@ -1,0 +1,87 @@
+# sync_bass.patches — mono hard-sync bass with stereo flange.
+#
+# Character: resonant sync sweep, strong fundamental from the sub, aggressive
+# ladder drive. The sync slave pitch is modulated by the envelope so each
+# note carves a vocal-sounding formant sweep. Stereo flanger on the tail
+# adds motion without smearing the attack.
+#
+#   MidiToCv ──► primary (Osc, fundamental pitch)
+#                    │ reset_out
+#                    ▼
+#                  slave (VDco) ◄── env → fm (sync-frequency sweep)
+#                    │
+#                    ▼
+#                  VLadder (sharp, mid resonance, hot drive)
+#                    │
+#                    ▼
+#                  Vca ◄── Adsr
+#                    │
+#                    ▼
+#                  VFlangerStereo ──► out
+
+patch {
+    module kbd   : MidiToCv
+
+    module glide : Glide { glide_ms: 18.0 }
+    kbd.voct -> glide.in
+
+    # Primary (pitch reference). Only the reset tick is used.
+    module primary : Osc { frequency: 0.0 }
+    glide.out -> primary.voct
+
+    # Slave oscillator — its own pitch is swept by the envelope to produce
+    # the classic sync whistle.
+    module slave : VDco {
+        saw_gain:      0.85
+        pulse_gain:    0.5
+        triangle_gain: 0.0
+        sub_gain:      0.65
+        curve:         0.5
+        fm_type:       logarithmic
+        frequency:     0.5
+    }
+    glide.out          -> slave.voct
+    primary.reset_out  -> slave.sync
+
+    module env : Adsr {
+        attack:  0.004
+        decay:   0.35
+        sustain: 0.25
+        release: 0.18
+        shape:   exponential
+    }
+    kbd.trigger -> env.trigger
+    kbd.gate    -> env.gate
+
+    # Envelope drives slave detune — the sync sweep.
+    env.out -[1.8]-> slave.fm
+
+    module vcf : VLadder {
+        variant:   sharp
+        cutoff:    420.0
+        resonance: 0.55
+        drive:     2.6
+    }
+
+    slave.out -> vcf.in
+    env.out -[2.4]-> vcf.cutoff_cv
+
+    module vca : Vca
+    vcf.out -> vca.in
+    env.out -> vca.cv
+
+    module flg : VFlangerStereo {
+        rate_hz:   0.22
+        depth:     0.35
+        manual_ms: 3.5
+        feedback:  0.15
+        mix:       0.35
+        lf_bypass: true
+        jitter:    0.1
+    }
+
+    vca.out -[0.75]-> flg.in
+
+    module out : AudioOut
+    flg.out -> out.in
+}

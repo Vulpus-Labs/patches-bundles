@@ -1,0 +1,80 @@
+template drum_machine(crush_rate: float = 0.8, crush_depth: float = 6.0, crush_mix: float = 0.3) {
+    in: kick, snare, hat, ohat, clap, tom, claves, cymbal
+    out: out
+
+    module kick_drum: Kick {
+        pitch: 50, sweep: 2000, sweep_time: 0.03, decay: 0.4, drive: 0.7, click: 0.4
+    }
+    module snare_drum: Snare {
+        pitch: 190, tone: 0.55, body_decay: 0.12, noise_decay: 0.18,
+        noise_freq: 3500, noise_q: 0.25, snap: 0.6
+    }
+    module closed_hat: ClosedHiHat {
+        pitch: 420, decay: 0.08, tone: 0.6, filter: 9000
+    }
+    module open_hat: OpenHiHat {
+        pitch: 420, decay: 0.45, tone: 0.55, filter: 8000
+    }
+    module clap_drum: Clap {
+        decay: 0.25, filter: 1400, q: 0.35, spread: 0.5, bursts: 4
+    }
+    module tom_drum: Tom {
+        pitch: 100, sweep: 350, sweep_time: 0.025, decay: 0.25, noise: 0.12
+    }
+    module claves_drum: Claves {
+        pitch: 2800, decay: 0.25, reson: 0.88
+    }
+    module cymbal_drum: Cymbal {
+        pitch: 550, decay: 1.5, tone: 0.4, filter: 5500, shimmer: 0.2
+    }
+
+    $.kick   -> kick_drum.trigger
+    $.snare  -> snare_drum.trigger
+    $.hat    -> closed_hat.trigger
+    $.ohat   -> open_hat.trigger
+    $.hat    -> open_hat.choke
+    $.clap   -> clap_drum.trigger
+    $.tom    -> tom_drum.trigger
+    $.claves -> claves_drum.trigger
+    $.cymbal -> cymbal_drum.trigger
+
+    module mix: StereoMixer([kick, snare, hat, ohat, clap, tom, claves, cymbal]) {
+        @kick { level: 0.85, pan: 0.0 },
+        @snare { level: 0.75, pan: -0.1 },
+        @hat { level: 0.55, pan: 0.3, send_a: 0.3 },
+        @ohat { level: 0.55, pan: -0.3, send_a: 0.3 },
+        @clap { level: 0.65, pan: 0.15, send_a: 0.2 },
+        @tom { level: 0.7,  pan: -0.25 },
+        @claves { level: 0.4, pan: 0.45, send_a: 0.3 },
+        @cymbal { level: 0.5, pan: 0.0, send_a: 0.3 }
+    }
+
+    module reverb : FdnReverb { character: room }
+    mix.send_a -> reverb.in
+    reverb.out -> mix.return_a
+
+    kick_drum.out   -> mix.in[kick]
+    snare_drum.out  -> mix.in[snare]
+    closed_hat.out  -> mix.in[hat]
+    open_hat.out    -> mix.in[ohat]
+    clap_drum.out   -> mix.in[clap]
+    tom_drum.out    -> mix.in[tom]
+    claves_drum.out -> mix.in[claves]
+    cymbal_drum.out -> mix.in[cymbal]
+
+    module split: StereoSplitter
+    module crush_l: Bitcrusher {
+        rate: <crush_rate>, depth: <crush_depth>, dry_wet: <crush_mix>
+    }
+    module crush_r: Bitcrusher {
+        rate: <crush_rate>, depth: <crush_depth>, dry_wet: <crush_mix>
+    }
+    module join: StereoJoiner
+
+    mix.out  -> split.in
+    split.out_left  -> crush_l.in
+    split.out_right -> crush_r.in
+    crush_l.out -> join.in_left
+    crush_r.out -> join.in_right
+    join.out -> $.out
+}

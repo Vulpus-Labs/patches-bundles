@@ -1,0 +1,147 @@
+# vintage_synth.patches - poly demo for the patches-vintage crate
+#
+# Signal path:
+#
+#   kbd (PolyMidiToCv)
+#     │ voct / trigger / gate (poly)
+#     ▼
+#   dco (VPolyDco) ── pwm ◄── lfo_spread (MonoToPoly) ◄── lfo (Lfo triangle)
+#     │
+#     ▼
+#   hpf (PolyHighpass)           # Selectable HPF, kept mild here
+#     │
+#     ▼
+#   vcf (VOtaPolyVcf)  ◄── cutoff_cv = env · env_to_cutoff + lfo · lfo_to_cutoff
+#     │
+#     ▼
+#   vca (PolyVca) ◄── cv = env (PolyAdsr, exponential)
+#     │
+#     ▼
+#   mix (PolyToMono)
+#     │
+#     ▼
+#   chorus (VChorus) ──► out (AudioOut)
+#
+# Panel — tweak these while the patch is playing; hot-reload re-adopts the
+# plan without dropouts.
+#
+#   VCF:            cutoff, resonance, drive
+#   Env amount:     env_to_cutoff  (set to a negative scale in the wire below
+#                   for inverted sweeps — brightness-down character)
+#   LFO:            lfo_rate, lfo_to_cutoff, lfo_to_pwm
+#   Envelope:       attack / decay / sustain / release, shape: exponential
+#   Mixer balance:  dco saw_on / pulse_on / sub_level / noise_level
+#   Chorus:         mode (off / one / two / both), variant (bright / dark)
+#
+# Notes:
+#   - Voice count is set by the host's AudioEnvironment.
+#     patches-player currently runs the default host poly_voices count;
+#     PolyMidiToCv will allocate up to that many voices LIFO.
+#   - PolyLfo does not yet exist (see epic E102); we use a mono Lfo broadcast
+#     through MonoToPoly for both PWM and cutoff modulation. Delay-to-onset
+#     and triangle-only LFO shaping are follow-ups.
+#   - VOtaVcf is an R3109/IR3109-style 4-pole OTA ladder with per-stage
+#     saturation, a 12/24 dB slope switch (`poles`), and `drift_amount`
+#     which scales the engine's GLOBAL_DRIFT backplane slot into cutoff
+#     wobble. Self-oscillates near resonance = 1.0 in either mode.
+
+patch {
+    # ── Voice sources ──────────────────────────────────────────────────────
+    module kbd : PolyMidiToCv
+
+    module sync_source : PolyOsc
+
+    module sync : VPolyDco {
+        saw_gain: 0.0
+        pulse_gain: 1.0
+        triangle_gain: 1.0
+        sub_gain: 0.5
+        frequency: -1.5
+        sync_softness: 0.2
+        curve: 0.4
+    }
+
+    kbd.voct -> sync.voct
+
+    module sync_lfo : Lfo { rate: 0.5 }
+    module m2p : MonoToPoly
+    sync_lfo.triangle -> m2p.in
+    env.out -[-2.0]-> sync.fm
+
+    sync_source.reset_out -> sync.sync
+
+    # ── Shared modulation ──────────────────────────────────────────────────
+    module lfo : PolyLfo {
+        rate: 0.1,
+        mode: bipolar,
+        spread: 0.2
+    }
+
+    lfo.triangle -[0.4]-> sync.pwm
+
+    # ── Per-voice envelope (single shared envelope) ────────────────────────
+    module env : PolyAdsr {
+        attack:  5.0
+        decay:   0.25
+        sustain: 0.6
+        release: 2.0
+        shape:   exponential
+    }
+    kbd.trigger -> env.trigger
+    kbd.gate    -> env.gate
+
+    # ── Pitch ──────────────────────────────────────────────────────────────
+    kbd.voct -> sync_source.voct
+
+    # ── Highpass (gentle here, bump cutoff for thinning) ───────────────────
+    module hpf : PolyHighpass { cutoff: -1.0, resonance: 0.0 }
+    sync.out -> hpf.in
+    kbd.voct -> hpf.voct
+
+    # ── VCF ────────────────────────────────────────────────────────────────
+    module vcf : VOtaPolyVcf {
+        poles:        four
+        cutoff:       300.0
+        resonance:    0.3
+        drive:        1.5
+        drift_amount: 0.4
+    }
+    hpf.out -[0.2]-> vcf.in
+
+    # Envelope + LFO → cutoff_cv (V/oct, summed). Each summand is clamped to
+    # ±1 octave by the DSL's scale range; we stack env across multiple sum
+    # channels to reach a wider sweep. Flip the sign on any env_* channel to
+    # invert that summand (brightness-down character).
+    module cutoff_mod : PolySum([env, lfo])
+    env.out        -[3.0]-> cutoff_mod.in[env]
+    kbd.trigger -> lfo.sync
+    lfo.triangle -[0.2]-> cutoff_mod.in[lfo]
+    cutoff_mod.out -> vcf.cutoff_cv
+
+    # ── VCA ────────────────────────────────────────────────────────────────
+    module vca : PolyVca
+    vcf.out -> vca.in
+    env.out -> vca.cv
+
+    # ── Collapse to mono, then stereo chorus ───────────────────────────────
+    module mix : PolyToMono
+    vca.out -> mix.in
+
+    module chorus : VChorus { jitter: 0.2, mode: one, hiss: 0.0 }
+    module delay  : VStereoBbd(1) {
+        dry_wet:  0.5
+        jitter:   0.2
+        delay_ms: 200
+        feedback: 0.7
+        pingpong: true
+    }
+
+    mix.out -[0.4]-> chorus.in
+
+    module out  : AudioOut
+    module verb : FdnReverb { mix: 0.4, character: cathedral }
+
+    chorus.out -> delay.in
+    delay.out  -> verb.in
+    verb.out   -> out.in
+}

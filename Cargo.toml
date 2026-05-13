@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "patches-vintage",
+    "patches-drums",
+    "patches-fft-harness",
+    "patches-fft-bundle",
+]
+
+[workspace.package]
+version = "0.7.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Vulpus-Labs/patches-bundles"
+categories = ["multimedia::audio"]
+publish = false
+
+[workspace.dependencies]
+patches-core = "0.7"
+patches-sdk = "0.7"
+patches-dsp = { git = "https://github.com/Vulpus-Labs/patches.git", rev = "95c4f2997cff527360f057bd9a327be3fa098cc7" }
+patches-io = { git = "https://github.com/Vulpus-Labs/patches.git", rev = "95c4f2997cff527360f057bd9a327be3fa098cc7" }
+rtrb = "0.3"

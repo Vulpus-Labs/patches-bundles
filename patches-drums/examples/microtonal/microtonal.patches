@@ -1,0 +1,186 @@
+pattern seven_eight {
+    notes: G4 G4:0.5 G#4 A4 . A4:0.5 A4 |
+           G#4 G4:0.5 G#4 A4 B4 A4:0.5 A4
+}
+
+pattern eleven_eight {
+    notes: B3 B3:0.3 C4 C#4 . C#4:0.3 C#4 |
+           C4 C4:0.3 C4 C#4
+}
+
+pattern beat {
+    drum:  x . . . . . . . x . . . . . . . 
+    snare: . . . . x . . . . . . . x . . .
+    ch:    . x x x . x x x . x x x . x x .
+    oh:    . . . . x . . . . . . . x . . x 
+}
+
+song microtonal_left(left) {
+    play { seven_eight }
+}
+
+song microtonal_right(right) {
+    play { eleven_eight }
+}
+
+song drums(drums) {
+    play { beat }
+}
+
+template drumz {
+    in: clock
+    out: out
+
+    module player : PatternPlayer([kick, snare, ch, oh])
+    player.clock <- $.clock
+
+    module kick : Kick
+    module snare : Snare
+    module ch : ClosedHiHat
+    module oh: OpenHiHat
+
+    player.trigger[kick] -> kick.trigger
+    player.trigger[snare] -> snare.trigger
+    player.trigger[ch] -> ch.trigger, oh.choke
+    player.trigger[oh] -> oh.trigger
+
+    module mixer : StereoMixer([kick, snare, ch, oh]) {
+        @kick { }
+        @snare { pan: -0.2 }
+        @ch { pan: 0.2 }
+        @oh { pan: 0.0 }
+    }
+
+    kick.out -> mixer.in[kick]
+    snare.out -> mixer.in[snare]
+    ch.out -> mixer.in[ch]
+    oh.out -> mixer.in[oh]
+
+    # Stereo bus: split for mono drive characterisation, then back to stereo
+    # via reverb. The template's `out` port is the L channel post-reverb;
+    # callers wanting both halves should split themselves.
+    module mix_split : StereoSplitter
+    mixer.out -> mix_split.in
+
+    module drive : Drive { mode: clip, drive: 8.0 }
+    mix_split.out_left -> drive.in
+
+    module verb : FdnReverb { mix: 0.2 }
+    drive.out -> verb.in
+
+    module verb_split : StereoSplitter
+    verb.out -> verb_split.in
+    verb_split.out_left -> $.out
+}
+
+template digital_delay(time: int) {
+    in: in
+    out: out
+
+    module delay : StereoDelay(1) {
+        pingpong: true
+        delay_ms: <time>
+        feedback: 0.4
+    }
+
+    module send_split : StereoSplitter
+    module return_join : StereoJoiner
+    module crusher_l : Bitcrusher{depth: 15, rate: 1.0}
+    module crusher_r : Bitcrusher{depth: 15, rate: 1.0}
+
+    delay.send[0] -> send_split.in
+    send_split.out_left  -> crusher_l.in
+    send_split.out_right -> crusher_r.in
+    crusher_l.out -> return_join.in_left
+    crusher_r.out -> return_join.in_right
+    return_join.out -> delay.return[0]
+
+    delay.in <- $.in
+    delay.out -> $.out
+}
+
+template voice {
+    in: clock
+    out: signal
+
+    module player : PatternPlayer(1)
+    player.clock <- $.clock
+
+    module pitch_add : Sum([base, adj])
+    player.cv1 -> pitch_add.in[base]
+    player.cv2 -[1s]-> pitch_add.in[adj]
+
+    module osc1 : Osc { frequency: 0.0, drift: 0.5 }
+    module osc2 : Osc { frequency: -0.02, drift: 0.5 }
+    module osc3 : Osc { frequency: 0.02, drift: 0.5 }
+
+    pitch_add.out -> osc1.voct, osc2.voct, osc3.voct
+    module osc_sum : Sum(3)
+    osc1.square -> osc_sum.in[0]
+    osc2.triangle -[0.5]-> osc_sum.in[1]
+    osc3.sawtooth -[0.5]-> osc_sum.in[2]
+
+    module adsr : Adsr { attack: 0.01, decay: 0.01, sustain: 0.7, release: 0.05 }
+    module vca: Vca
+
+    player.trigger -> adsr.trigger
+    player.gate -> adsr.gate
+    adsr.out -> vca.cv
+    osc_sum.out -> vca.in
+
+    module filter : Svf { cutoff: 800hz, q: 0.5 }
+    module filter_adsr : Adsr { attack: 0.15, release: 0.1, sustain: 0.6 }
+    player.trigger -> filter_adsr.trigger
+    player.gate -> filter_adsr.gate
+    filter_adsr.out -[0.6]-> filter.fm
+
+    vca.out -> filter.in
+    filter.lowpass -> $.signal
+}
+
+patch {
+    module seq_l: MasterSequencer([left]) {
+        bpm: 90
+        song: microtonal_left
+        swing: 0.6
+    }
+
+    module seq_r: MasterSequencer([right]) {
+        bpm: 90
+        song: microtonal_right
+        swing: 0.6
+    }
+
+    module seq_drums: MasterSequencer([drums]) {
+        bpm: 90
+        song: drums
+        swing: 0.6
+    }
+
+    module left : voice
+    module right : voice
+    module drumkit : drumz
+    module delay : digital_delay(400)
+
+    seq_l.clock[left] -> left.clock
+    seq_r.clock[right] -> right.clock
+    seq_drums.clock[drums] -> drumkit.clock
+    
+    module mix : StereoMixer([drums_l, drums_r, left, right]) {
+        @drums_l { pan: -1.0, send_a: 0.4 }
+        @drums_r { pan: 1.0, send_a: 0.4 }
+        @left { pan: -0.9, level: 0.5, send_a: 0.8 }
+        @right { pan: 0.9, level: 0.5, send_a: 0.8 }
+    }
+
+    mix.send_a -> delay.in
+    delay.out -> mix.return_a
+
+    drumkit.out -> mix.in[drums_l]
+    left.signal -> mix.in[left]
+    right.signal -> mix.in[right]
+
+    mix.out -> out.in
+
+    module out : AudioOut
+}

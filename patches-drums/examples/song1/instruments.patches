@@ -1,0 +1,35 @@
+include "utils.patches"
+
+template bass(glide_ms: float = 40.0, q: float = 0.7, filter_env_amount: float = 0.3) {
+    in: voct, trigger, gate, cutoff
+    out: out
+
+    module sub : Osc
+    module saw : Osc { frequency: 0.004}
+    module tuner : Tuner { octave: -1 }
+    module sum : Sum([sub, saw, square])
+    module glide : Glide { glide_ms: <glide_ms> }
+    module amp_env : env
+    module filter_env : Adsr { attack: 0.005, decay: 0.12, sustain: 0.0, release: 0.1 }
+    module filter : Svf { cutoff: 800Hz, q: <q> }
+
+    $.voct -> glide.in
+    glide.out -> tuner.in, saw.voct
+    tuner.out -> sub.voct
+
+    $.trigger -> amp_env.trigger, filter_env.trigger
+    $.gate -> amp_env.gate, filter_env.gate
+
+    sub.sine -[0.4]-> sum.in[sub]
+    saw.sawtooth -[0.5]-> sum.in[saw]
+    saw.triangle -[0.1]->sum.in[square]
+
+    sum.out -> filter.in
+
+    module cutoff_sum : Sum([cutoff, env])
+    $.cutoff -[0.4]-> cutoff_sum.in[cutoff]
+    filter_env.out -[<filter_env_amount>]-> cutoff_sum.in[env]
+    cutoff_sum.out -> filter.voct
+    filter.lowpass -> amp_env.in
+    amp_env.out -> $.out
+}

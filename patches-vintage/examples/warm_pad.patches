@@ -1,0 +1,99 @@
+# warm_pad.patches — lush evolving poly pad.
+#
+# Character: slow bloom, soft top-end, subtle detune from PolyLfo pwm spread,
+# thick stereo bath. Filter is kept under the fundamental so the pad sits
+# behind everything else; brightness creeps up as the envelope opens.
+#
+#   PolyMidiToCv
+#     │
+#     ▼
+#   VPolyDco (saw + sub + triangle, gentle curve)
+#     │
+#     ▼
+#   VPolyLadder (smooth, env-swept, modest resonance)
+#     │
+#     ▼
+#   PolyVca ◄── PolyAdsr (long attack/release)
+#     │
+#     ▼
+#   PolyToMono ──► VChorus (dark, both LFOs) ──► FdnReverb ──► out
+
+template pad_voice(
+    cutoff:   float = 220.0,
+    env_amt:  float = 2.5,
+    lfo_amt:  float = 0.25,
+    attack:   float = 1.6,
+    release:  float = 2.8,
+) {
+    in:  voct, trigger, gate
+    out: audio
+
+    module dco : VPolyDco {
+        saw_gain:      0.8
+        triangle_gain: 0.5
+        sub_gain:      0.6
+        pulse_gain:    0.0
+        curve:         0.35
+    }
+
+    module lfo : PolyLfo { rate: 0.12, mode: bipolar, spread: 0.6 }
+    lfo.triangle -[0.15]-> dco.pwm
+
+    module env : PolyAdsr {
+        attack:  <attack>
+        decay:   1.2
+        sustain: 0.8
+        release: <release>
+        shape:   exponential
+    }
+
+    module vcf : VPolyLadder {
+        variant:   smooth
+        cutoff:    <cutoff>
+        resonance: 0.25
+        drive:     1.1
+    }
+
+    module cut_mod : PolySum([env, lfo])
+    env.out       -[<env_amt>]-> cut_mod.in[env]
+    lfo.triangle  -[<lfo_amt>]-> cut_mod.in[lfo]
+
+    module vca : PolyVca
+
+    $.voct    -> dco.voct
+    $.trigger -> env.trigger
+    $.gate    -> env.gate
+
+    dco.out        -> vcf.in
+    cut_mod.out    -> vcf.cutoff_cv
+    vcf.out        -> vca.in
+    env.out        -> vca.cv
+    vca.out        -> $.audio
+}
+
+patch {
+    module kbd : PolyMidiToCv
+
+    module pad : pad_voice(
+        cutoff:  200.0,
+        env_amt: 2.8,
+        lfo_amt: 0.3,
+        attack:  1.8,
+        release: 3.2,
+    )
+
+    kbd.voct    -> pad.voct
+    kbd.trigger -> pad.trigger
+    kbd.gate    -> pad.gate
+
+    module mix : PolyToMono
+    pad.audio -> mix.in
+
+    module chorus : VChorus { variant: dark, mode: both, hiss: 0.0, jitter: 0.15 }
+    module verb   : FdnReverb { mix: 0.45, character: cathedral }
+    module out    : AudioOut
+
+    mix.out -[0.08]-> chorus.in
+    chorus.out -> verb.in
+    verb.out   -> out.in
+}

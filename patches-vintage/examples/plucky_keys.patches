@@ -1,0 +1,94 @@
+# plucky_keys.patches — percussive poly keys with slap echo.
+#
+# Character: fast OTA filter thwack, hollow pulse body, narrow PWM. The
+# BBD delay is short and dark so repeats act as a slap-back tail rather
+# than a rhythmic echo. Cutoff tracks the envelope strongly; resonance
+# is held below self-oscillation so the pluck stays defined.
+#
+#   PolyMidiToCv
+#     │
+#     ▼
+#   VPolyDco (pulse + tiny saw, narrow width)
+#     │
+#     ▼
+#   VOtaPolyVcf (2-pole, strong env, modest drift)
+#     │
+#     ▼
+#   PolyVca ◄── PolyAdsr (percussive)
+#     │
+#     ▼
+#   PolyToMono ──► VBbd slap ──► out
+
+template pluck_voice(
+    cutoff:    float = 260.0,
+    env_amt:   float = 5.5,
+    decay:     float = 0.22,
+    drift:     float = 0.25,
+) {
+    in:  voct, trigger, gate
+    out: audio
+
+    module dco : VPolyDco {
+        saw_gain:      0.15
+        pulse_gain:    0.95
+        triangle_gain: 0.0
+        sub_gain:      0.25
+        curve:         0.2
+    }
+
+    module width_lfo : PolyLfo { rate: 0.25, mode: unipolar_positive, spread: 0.4 }
+    width_lfo.triangle -[0.2]-> dco.pwm
+
+    module env : PolyAdsr {
+        attack:  0.004
+        decay:   <decay>
+        sustain: 0.0
+        release: 0.18
+        shape:   exponential
+    }
+
+    module vcf : VOtaPolyVcf {
+        poles:        two
+        cutoff:       <cutoff>
+        resonance:    0.45
+        drive:        1.6
+        drift_amount: <drift>
+    }
+
+    module vca : PolyVca
+
+    $.voct    -> dco.voct
+    $.trigger -> env.trigger
+    $.gate    -> env.gate
+
+    dco.out -[0.6]-> vcf.in
+    env.out -[<env_amt>]-> vcf.cutoff_cv
+
+    vcf.out -> vca.in
+    env.out -> vca.cv
+    vca.out -> $.audio
+}
+
+patch {
+    module kbd   : PolyMidiToCv
+    module pluck : pluck_voice(cutoff: 280.0, env_amt: 5.8, decay: 0.2, drift: 0.3)
+
+    kbd.voct    -> pluck.voct
+    kbd.trigger -> pluck.trigger
+    kbd.gate    -> pluck.gate
+
+    module mix : PolyToMono
+    pluck.audio -> mix.in
+
+    module slap : VBbd(1) {
+        dry_wet:  0.35
+        jitter:   0.15
+        delay_ms: 95
+        feedback: 0.28
+    }
+
+    module out : AudioOut
+
+    mix.out -[0.12]-> slap.in
+    slap.out -> out.in
+}

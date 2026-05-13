@@ -1,0 +1,93 @@
+# gritty_lead.patches — mono solo lead with feedback flange.
+#
+# Character: hot, reedy, slight PWM motion, sharp ladder bite. The flanger
+# sits on the output with high feedback so sustained notes bloom into a
+# resonant metallic edge. Glide gives fingered-slide phrasing.
+#
+#   MidiToCv
+#     │
+#     ▼
+#   Glide ──► VDco (saw + pwm pulse, heavy curve)
+#     │
+#     ▼
+#   VLadder (sharp, high resonance, env-swept)
+#     │
+#     ▼
+#   Vca ◄── Adsr (snappy)
+#     │
+#     ▼
+#   VFlanger (heavy feedback) ──► out
+
+template lead_voice(
+    cutoff:   float = 900.0,
+    reso:     float = 0.4,
+    drive:    float = 2.2,
+    env_amt:  float = 3.2,
+    glide_ms: float = 42.0,
+) {
+    in:  voct, trigger, gate
+    out: audio
+
+    module glide : Glide { glide_ms: <glide_ms> }
+
+    module dco : VDco {
+        saw_gain:      1.0
+        pulse_gain:    0.0
+        triangle_gain: 0.35
+        sub_gain:      0.3
+        curve:         0.45
+    }
+
+    module env : Adsr {
+        attack:  0.008
+        decay:   0.18
+        sustain: 0.55
+        release: 0.25
+        shape:   exponential
+    }
+
+    module vcf : VLadder {
+        variant:   sharp
+        cutoff:    <cutoff>
+        resonance: <reso>
+        drive:     <drive>
+    }
+
+    module vca : Vca
+
+    $.voct -> glide.in
+    glide.out -> dco.voct
+
+    $.trigger -> env.trigger
+    $.gate    -> env.gate
+
+    dco.out       -> vcf.in
+    env.out  -[<env_amt>]-> vcf.cutoff_cv
+    vcf.out       -> vca.in
+    env.out       -> vca.cv
+    vca.out       -> $.audio
+}
+
+patch {
+    module kbd  : MidiToCv
+    module lead : lead_voice(cutoff: 1100.0, reso: 0.45, drive: 2.4, env_amt: 3.5, glide_ms: 55.0)
+
+    kbd.voct    -> lead.voct
+    kbd.trigger -> lead.trigger
+    kbd.gate    -> lead.gate
+
+    module flg : VFlanger {
+        rate_hz:   0.35
+        depth:     0.65
+        manual_ms: 1.4
+        feedback:  0.6
+        mix:       0.45
+        lf_bypass: true
+        jitter:    0.2
+    }
+
+    module out : AudioOut
+
+    lead.audio -[0.7]-> flg.in
+    flg.out -> out.in
+}

@@ -1,0 +1,26 @@
+[package]
+name = "patches-fft-bundle"
+description = "FFT-based audio modules (convolution reverb, spectral pitch shift) for the Patches modular-audio framework, packaged as a cdylib bundle."
+keywords = ["audio", "modular", "convolution", "reverb", "pitch-shift"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+patches-sdk = { workspace = true }
+patches-dsp = { workspace = true }
+patches-io = { workspace = true }
+patches-fft-harness = { path = "../patches-fft-harness", version = "0.7" }
+rtrb = { workspace = true }
+
+[dev-dependencies]
+patches-sdk = { workspace = true, features = ["test-support"] }
+
+[lib]
+name = "patches_fft_bundle"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+doctest = false

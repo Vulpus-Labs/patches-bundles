@@ -1,0 +1,15 @@
+template env(attack: float = 0.1, release: float = 0.1, sustain: float = 0.5, decay: float = 0.1) {
+    in: trigger, gate, in
+    out: out
+
+    module adsr : Adsr { <attack>, <release>, <sustain>, <decay>}
+    module vca: Vca
+
+    adsr.trigger <- $.trigger
+    adsr.gate <- $.gate
+    vca.in <- $.in
+
+    adsr.out -> vca.cv
+
+    vca.out -> $.out
+}

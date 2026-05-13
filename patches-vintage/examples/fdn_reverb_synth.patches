@@ -1,0 +1,89 @@
+# fdn_reverb_synth.patches — polyphonic synth with stereo FDN hall reverb
+#
+# Architecture:
+#   kbd      — PolyMidiToCv: LIFO voice allocation (up to poly_voices voices)
+#   osc      — PolyOsc: one sawtooth per voice, driven by poly V/oct
+#   amp_env  — PolyAdsr: per-voice amplitude envelope (short decay, no sustain)
+#   vca      — PolyVca: shapes each voice's audio with its amplitude envelope
+#   collapse — PolyToMono: sums all poly voices to a single mono signal
+#   reverb   — FdnReverb: 8-line hall reverb; both outputs feed AudioOut stereo
+#   out      — AudioOut: stereo output
+#
+# Signal flow:
+#
+#   kbd ──voct──→ osc ──sawtooth──→ vca ──→ collapse ──→ reverb ──→ out (L+R)
+#   kbd ──trigger──→ amp_env
+#   kbd ──gate────→ amp_env
+#   amp_env ──out──→ vca.cv
+#
+# Hot-reload tips:
+#   - Raise amp_env release (try 0.5–1.5) for longer notes into the reverb tail.
+#   - Lower reverb size (try 0.2–0.4) for a smaller, tighter room.
+#   - Try character: "cathedral" for an extreme, very long tail.
+#   - Raise brightness (try 0.7–0.9) for a brighter, more present reverb.
+#   - Scale down the collapse→reverb connection (try 0.2) for a drier mix.
+
+patch {
+    module kbd      : PolyMidiToCv
+    module osc      : PolyOsc { frequency: C0,  fm_type:logarithmic }
+    module amp_env  : PolyAdsr   { attack: 0.005, decay: 0.25, sustain: 0.4, release: 0.6 }
+    module vca      : PolyVca
+    module collapse : PolyToMono
+    module reverb   : FdnReverb  { character: "hall", size: 0.5, brightness: 0.6, mix: 0.3 }
+    module out      : AudioOut
+
+    # V/oct: keyboard → oscillator
+    kbd.voct       -> osc.voct
+
+    # Amplitude envelope: trigger and gate per voice
+    kbd.trigger    -> amp_env.trigger
+    kbd.gate       -> amp_env.gate
+
+    # VCA: shaped audio per voice
+    osc.sawtooth   -> vca.in
+    amp_env.out    -> vca.cv
+
+    module lfo : PolyLfo { rate: 1 }
+    kbd.trigger -> lfo.sync
+    
+    module filter : PolyLowpass { cutoff: 500Hz }
+    lfo.sine -[0.1s]-> osc.fm
+    # Collapse poly voices to mono and feed the reverb
+    vca.out        -> filter.in
+    filter.out -> collapse.in
+
+    module delay : VStereoBbd(1) { 
+        delay_ms: 100
+        feedback: 0.4
+    }
+
+    module arp_lfo : Lfo { rate: 2.0 }
+    module arp : MidiArp
+    module arp_kbd : MidiToCv
+    module arp_osc : Osc
+    module arp_adsr : Adsr
+    module arp_vca : Vca
+
+    # `square` is sustained audio; MidiArp.clock wants one-sample triggers
+    # (any sample with v > 0 fires a pulse). Use Lfo's reset_out, which
+    # emits one trigger per cycle.
+    arp_lfo.reset_out -> arp.clock
+    arp.midi -> arp_kbd.midi
+    arp_kbd.voct -> arp_osc.voct
+    arp_kbd.voct -> ~meter(pitch)
+    arp_kbd.trigger -> arp_adsr.trigger, ~trigger_led(arp)
+    arp_kbd.gate -> arp_adsr.gate
+
+    arp_osc.triangle -> arp_vca.in
+    arp_adsr.out -> arp_vca.cv
+
+    module mix : Sum([chord, arp])
+    collapse.out  -[0.2]-> mix.in[chord]
+    arp_vca.out -> mix.in[arp]
+
+    mix.out -> delay.in
+    delay.out -> reverb.in
+
+    # Stereo reverb output → audio out
+    reverb.out  -> out.in
+}

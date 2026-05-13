@@ -1,0 +1,23 @@
+[package]
+name = "patches-drums"
+description = "Analog drum synthesis bundle (kick, snare, hihat, cymbal, tom, clap, claves) for the Patches modular-audio framework, packaged as a cdylib bundle."
+keywords = ["audio", "modular", "synthesizer", "drums", "drum-machine"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+patches-sdk = { workspace = true }
+patches-dsp = { workspace = true }
+
+[dev-dependencies]
+patches-sdk = { workspace = true, features = ["test-support"] }
+
+[lib]
+name = "patches_drums"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+doctest = false
