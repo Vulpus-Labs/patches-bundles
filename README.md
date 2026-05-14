@@ -29,17 +29,13 @@ license (MIT), a single release tag, and a single CI pipeline.
 ## Status
 
 Extracted from the main `patches` monorepo under
-[E146](https://github.com/Vulpus-Labs/patches/blob/main/epics/in-progress/E146-monorepo-split.md)
+[E146](https://github.com/Vulpus-Labs/patches/blob/main/epics/closed/E146-monorepo-split.md)
 (tickets 0882 / 0883 / 0884) and subsequently consolidated into this
 single repo.
 
-`patches-dsp` and `patches-io` are currently pinned by git rev because
-the registry-merge landing on the main repo (`patches-core` 0.7.0)
-post-dates the most recent main-repo tag (`v0.7.1`). Once the main
-repo cuts a `v0.7.2+` tag the deps in `Cargo.toml` will flip from
-`rev = "…"` to `tag = "v0.7.2"`.
-
-`patches-io` has no crates.io presence; it stays git-only.
+`patches-dsp` and `patches-io` are pinned to the main repo's
+`v0.7.2` tag. `patches-io` has no crates.io presence and stays
+git-only.
 
 ## Build
 
