@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "patches-io",
     "patches-vintage",
     "patches-drums",
     "patches-fft-harness",
@@ -19,5 +20,5 @@ publish = false
 patches-core = "0.7"
 patches-sdk = "0.7"
 patches-dsp = { git = "https://github.com/Vulpus-Labs/patches.git", tag = "v0.7.2" }
-patches-io = { git = "https://github.com/Vulpus-Labs/patches.git", tag = "v0.7.2" }
+patches-io = { path = "patches-io" }
 rtrb = "0.3"
