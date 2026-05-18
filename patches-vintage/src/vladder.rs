@@ -4,6 +4,11 @@
 //! input carries a V/oct offset summed externally from envelopes, LFOs
 //! and key-tracking; the module adds nothing on top.
 //!
+//! Module plumbing (ports, periodic updates, `apply_static`/ramp
+//! cadence) lives in [`crate::vintage_filter`] and is shared with
+//! [`crate::vpoly_ladder`], [`crate::vota_vcf`],
+//! [`crate::vota_poly_vcf`].
+//!
 //! # Inputs
 //!
 //! | Port        | Kind | Description                          |
@@ -30,11 +35,15 @@ use patches_sdk::module_params;
 use patches_sdk::param_frame::ParamView;
 use patches_sdk::{
     params_enum, AudioEnvironment, CablePool, CountAxis, InputPort, InstanceId, Module,
-    ModuleDescriptor, ModuleDescriptorTemplate, MonoInput, MonoOutput, OutputPort,
-    ParameterKind, ParameterTemplate, PortTemplate,
+    ModuleDescriptor, ModuleDescriptorTemplate, OutputPort, ParameterKind, ParameterTemplate,
+    PortTemplate,
 };
 use patches_sdk::{StructuralParams, BuildError};
-use patches_dsp::{LadderCoeffs, LadderKernel, LadderVariant};
+use patches_dsp::{LadderKernel, LadderVariant};
+
+use crate::vintage_filter::{
+    VintageVcfMonoCore, CUTOFF_MAX, CUTOFF_MIN, DRIVE_MAX,
+};
 
 params_enum! {
     pub enum VLadderVariant {
@@ -61,35 +70,10 @@ module_params! {
     }
 }
 
-const CUTOFF_MIN: f32 = 20.0;
-const CUTOFF_MAX: f32 = 20_000.0;
-const DRIVE_MAX: f32 = 4.0;
-
 pub struct VLadder {
     instance_id: InstanceId,
     descriptor: ModuleDescriptor,
-    sample_rate: f32,
-    interval_recip: f32,
-    variant: VLadderVariant,
-    cutoff: f32,
-    resonance: f32,
-    drive: f32,
-    kernel: LadderKernel,
-    in_audio: MonoInput,
-    in_cutoff_cv: MonoInput,
-    out_audio: MonoOutput,
-}
-
-impl VLadder {
-    fn coeffs(&self, cv_voct: f32) -> LadderCoeffs {
-        let effective = (self.cutoff * (2.0f32).powf(cv_voct)).clamp(CUTOFF_MIN, self.sample_rate * 0.45);
-        LadderCoeffs::new(effective, self.sample_rate, self.resonance, self.drive, self.variant.into())
-    }
-
-    fn apply_static(&mut self) {
-        let c = self.coeffs(0.0);
-        self.kernel.set_static(c);
-    }
+    core: VintageVcfMonoCore<LadderKernel>,
 }
 
 impl Module for VLadder {
@@ -114,36 +98,35 @@ impl Module for VLadder {
         T
     }
 
-    fn prepare(env: &AudioEnvironment, descriptor: ModuleDescriptor, instance_id: InstanceId, _structural: &StructuralParams) -> Result<Self, BuildError> { Ok({
-        let variant = VLadderVariant::Smooth;
-        let cutoff = 1_000.0;
-        let resonance = 0.0;
-        let drive = 1.0;
-        let coeffs = LadderCoeffs::new(cutoff, env.sample_rate, resonance, drive, variant.into());
-        Self {
+    fn prepare(
+        env: &AudioEnvironment,
+        descriptor: ModuleDescriptor,
+        instance_id: InstanceId,
+        _structural: &StructuralParams,
+    ) -> Result<Self, BuildError> {
+        Ok(Self {
             instance_id,
             descriptor,
-            sample_rate: env.sample_rate,
-            interval_recip: 1.0 / env.periodic_update_interval as f32,
-            variant,
-            cutoff,
-            resonance,
-            drive,
-            kernel: LadderKernel::new_static(coeffs),
-            in_audio: MonoInput::default(),
-            in_cutoff_cv: MonoInput::default(),
-            out_audio: MonoOutput::default(),
-        }
-    })}
+            core: VintageVcfMonoCore::new(
+                env,
+                false,
+                LadderVariant::from(VLadderVariant::Smooth),
+                1_000.0,
+                0.0,
+                1.0,
+            ),
+        })
+    }
 
     fn update_validated_parameters(&mut self, p: &ParamView<'_>) {
-        self.variant = p.get(params::variant);
-        self.cutoff = p.get(params::cutoff).clamp(CUTOFF_MIN, CUTOFF_MAX);
-        self.resonance = p.get(params::resonance).clamp(0.0, 1.0);
-        self.drive = p.get(params::drive).clamp(0.0, DRIVE_MAX);
-        if !self.in_cutoff_cv.is_connected() {
-            self.apply_static();
-        }
+        let variant: VLadderVariant = p.get(params::variant);
+        self.core.set_params(
+            variant.into(),
+            p.get(params::cutoff).clamp(CUTOFF_MIN, CUTOFF_MAX),
+            p.get(params::resonance).clamp(0.0, 1.0),
+            p.get(params::drive).clamp(0.0, DRIVE_MAX),
+            0.0,
+        );
     }
 
     fn descriptor(&self) -> &ModuleDescriptor {
@@ -155,18 +138,11 @@ impl Module for VLadder {
     }
 
     fn set_ports(&mut self, inputs: &[InputPort], outputs: &[OutputPort]) {
-        self.in_audio = MonoInput::from_ports(inputs, 0);
-        self.in_cutoff_cv = MonoInput::from_ports(inputs, 1);
-        self.out_audio = MonoOutput::from_ports(outputs, 0);
-        if !self.in_cutoff_cv.is_connected() {
-            self.apply_static();
-        }
+        self.core.set_ports(inputs, outputs);
     }
 
     fn process(&mut self, pool: &mut CablePool<'_>) {
-        let x = pool.read_mono(&self.in_audio);
-        let y = self.kernel.tick(x);
-        pool.write_mono(&self.out_audio, y);
+        self.core.process(pool);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -175,12 +151,7 @@ impl Module for VLadder {
     fn wants_periodic(&self) -> bool { true }
 
     fn periodic_update(&mut self, pool: &CablePool<'_>) {
-        if !self.in_cutoff_cv.is_connected() {
-            return;
-        }
-        let cv = pool.read_mono(&self.in_cutoff_cv);
-        let c = self.coeffs(cv);
-        self.kernel.begin_ramp(c, self.interval_recip);
+        self.core.periodic_update(pool);
     }
 }
 

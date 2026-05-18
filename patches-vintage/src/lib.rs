@@ -19,6 +19,7 @@ pub mod vbbd;
 pub mod vstereobbd;
 pub mod vchorus;
 pub mod vdco;
+pub(crate) mod vintage_filter;
 pub mod vflanger;
 pub mod vflanger_stereo;
 pub mod vota_poly_vcf;

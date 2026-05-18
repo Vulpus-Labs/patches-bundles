@@ -14,6 +14,10 @@
 //! scaled by the `drift_amount` parameter. `drift_amount = 0.0` is
 //! bit-identical to a drift-free build.
 //!
+//! Module plumbing (ports, periodic updates, `apply_static`/ramp
+//! cadence) lives in [`crate::vintage_filter`] and is shared with the
+//! other three ladder/VCF modules.
+//!
 //! # Inputs
 //!
 //! | Port        | Kind | Description                          |
@@ -41,11 +45,15 @@ use patches_sdk::module_params;
 use patches_sdk::param_frame::ParamView;
 use patches_sdk::{
     params_enum, AudioEnvironment, CablePool, CountAxis, InputPort, InstanceId, Module,
-    ModuleDescriptor, ModuleDescriptorTemplate, MonoInput, MonoOutput, OutputPort,
-    ParameterKind, ParameterTemplate, PortTemplate, GLOBAL_DRIFT,
+    ModuleDescriptor, ModuleDescriptorTemplate, OutputPort, ParameterKind, ParameterTemplate,
+    PortTemplate,
 };
 use patches_sdk::{StructuralParams, BuildError};
-use patches_dsp::{OtaLadderCoeffs, OtaLadderKernel, OtaPoles};
+use patches_dsp::{OtaLadderKernel, OtaPoles};
+
+use crate::vintage_filter::{
+    VintageVcfMonoCore, CUTOFF_MAX, CUTOFF_MIN, DRIVE_MAX,
+};
 
 params_enum! {
     pub enum VOtaPoles {
@@ -73,43 +81,10 @@ module_params! {
     }
 }
 
-const CUTOFF_MIN: f32 = 20.0;
-const CUTOFF_MAX: f32 = 20_000.0;
-const DRIVE_MAX: f32 = 4.0;
-/// Max cents of cutoff detune at `drift_amount = 1.0, drift = ±1.0`.
-const MAX_DRIFT_CENTS: f32 = 25.0;
-
 pub struct VOtaVcf {
     instance_id: InstanceId,
     descriptor: ModuleDescriptor,
-    sample_rate: f32,
-    interval_recip: f32,
-    poles: VOtaPoles,
-    cutoff: f32,
-    resonance: f32,
-    drive: f32,
-    drift_amount: f32,
-    kernel: OtaLadderKernel,
-    in_audio: MonoInput,
-    in_cutoff_cv: MonoInput,
-    in_global_drift: MonoInput,
-    out_audio: MonoOutput,
-}
-
-impl VOtaVcf {
-    fn coeffs(&self, cv_voct: f32, drift_sample: f32) -> OtaLadderCoeffs {
-        let drift_voct = drift_sample * self.drift_amount * (MAX_DRIFT_CENTS / 1200.0);
-        let total_voct = cv_voct + drift_voct;
-        let effective = (self.cutoff * (2.0f32).powf(total_voct))
-            .clamp(CUTOFF_MIN, self.sample_rate * 0.45);
-        let k = self.resonance * OtaPoles::Four.k_max();
-        OtaLadderCoeffs::new(effective, self.sample_rate, k, self.drive)
-    }
-
-    fn apply_static(&mut self) {
-        let c = self.coeffs(0.0, 0.0);
-        self.kernel.set_static(c);
-    }
+    core: VintageVcfMonoCore<OtaLadderKernel>,
 }
 
 impl Module for VOtaVcf {
@@ -135,44 +110,35 @@ impl Module for VOtaVcf {
         T
     }
 
-    fn prepare(env: &AudioEnvironment, descriptor: ModuleDescriptor, instance_id: InstanceId, _structural: &StructuralParams) -> Result<Self, BuildError> { Ok({
-        let poles = VOtaPoles::Four;
-        let cutoff = 1_000.0;
-        let resonance = 0.0;
-        let drive = 1.0;
-        let drift_amount = 0.0;
-        let coeffs = OtaLadderCoeffs::new(cutoff, env.sample_rate, 0.0, drive);
-        Self {
+    fn prepare(
+        env: &AudioEnvironment,
+        descriptor: ModuleDescriptor,
+        instance_id: InstanceId,
+        _structural: &StructuralParams,
+    ) -> Result<Self, BuildError> {
+        Ok(Self {
             instance_id,
             descriptor,
-            sample_rate: env.sample_rate,
-            interval_recip: 1.0 / env.periodic_update_interval as f32,
-            poles,
-            cutoff,
-            resonance,
-            drive,
-            drift_amount,
-            kernel: OtaLadderKernel::new_static(coeffs, poles.into()),
-            in_audio: MonoInput::default(),
-            in_cutoff_cv: MonoInput::default(),
-            in_global_drift: MonoInput::backplane(GLOBAL_DRIFT),
-            out_audio: MonoOutput::default(),
-        }
-    })}
+            core: VintageVcfMonoCore::new(
+                env,
+                true,
+                OtaPoles::from(VOtaPoles::Four),
+                1_000.0,
+                0.0,
+                1.0,
+            ),
+        })
+    }
 
     fn update_validated_parameters(&mut self, p: &ParamView<'_>) {
-        self.poles = p.get(params::poles);
-        self.cutoff = p.get(params::cutoff).clamp(CUTOFF_MIN, CUTOFF_MAX);
-        self.resonance = p.get(params::resonance).clamp(0.0, 1.0);
-        self.drive = p.get(params::drive).clamp(0.0, DRIVE_MAX);
-        self.drift_amount = p.get(params::drift_amount).clamp(0.0, 1.0);
-        self.kernel.set_poles(self.poles.into());
-        // Coefficients depend on cutoff_cv and drift, both read each periodic
-        // update. Fall back to static apply only when neither modulates the
-        // cutoff.
-        if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
-            self.apply_static();
-        }
+        let poles: VOtaPoles = p.get(params::poles);
+        self.core.set_params(
+            poles.into(),
+            p.get(params::cutoff).clamp(CUTOFF_MIN, CUTOFF_MAX),
+            p.get(params::resonance).clamp(0.0, 1.0),
+            p.get(params::drive).clamp(0.0, DRIVE_MAX),
+            p.get(params::drift_amount).clamp(0.0, 1.0),
+        );
     }
 
     fn descriptor(&self) -> &ModuleDescriptor {
@@ -184,18 +150,11 @@ impl Module for VOtaVcf {
     }
 
     fn set_ports(&mut self, inputs: &[InputPort], outputs: &[OutputPort]) {
-        self.in_audio = MonoInput::from_ports(inputs, 0);
-        self.in_cutoff_cv = MonoInput::from_ports(inputs, 1);
-        self.out_audio = MonoOutput::from_ports(outputs, 0);
-        if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
-            self.apply_static();
-        }
+        self.core.set_ports(inputs, outputs);
     }
 
     fn process(&mut self, pool: &mut CablePool<'_>) {
-        let x = pool.read_mono(&self.in_audio);
-        let y = self.kernel.tick(x);
-        pool.write_mono(&self.out_audio, y);
+        self.core.process(pool);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -204,23 +163,7 @@ impl Module for VOtaVcf {
     fn wants_periodic(&self) -> bool { true }
 
     fn periodic_update(&mut self, pool: &CablePool<'_>) {
-        let cv_connected = self.in_cutoff_cv.is_connected();
-        let drift_active = self.drift_amount > 0.0;
-        if !cv_connected && !drift_active {
-            return;
-        }
-        let cv = if cv_connected {
-            pool.read_mono(&self.in_cutoff_cv)
-        } else {
-            0.0
-        };
-        let drift = if drift_active {
-            pool.read_mono(&self.in_global_drift)
-        } else {
-            0.0
-        };
-        let c = self.coeffs(cv, drift);
-        self.kernel.begin_ramp(c, self.interval_recip);
+        self.core.periodic_update(pool);
     }
 }
 
