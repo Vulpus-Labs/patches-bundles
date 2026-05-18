@@ -1,0 +1,267 @@
+# Drum machine demo (struck-resonator variant): swaps kick/tom/claves
+# for the ADR 0002 Kick2/Tom2/Claves2 family.
+# Kick2, snare, closed hat, open hat, clap, Tom2, Claves2, cymbal.
+# Drive, bitcrusher, and transient shaping on individual voices.
+
+# ── Patterns ──────────────────────────────────────────────────────────────
+
+# Four-on-the-floor kick with ghost notes
+pattern kick_basic {
+    hit: x:1.0 .     .     .     x:1.0 .     .     .     x:1.0 .     .     .     x:1.0 .     .     .
+}
+
+pattern kick_syncopated {
+    hit: x:1.0 .     .     x:0.6 .     .     x:0.8 .     x:1.0 .     .     x:0.5 .     .     x:0.7 .
+}
+
+# Backbeat snare
+pattern snare_basic {
+    hit: .     .     .     .     x:1.0 .     .     .     .     .     .     .     x:1.0 .     .     .
+}
+
+pattern snare_busy {
+    hit: .     .     .     .     x:1.0 .     x:0.4 .     .     .     x:0.3 .     x:1.0 .     .     x:0.5
+}
+
+# Closed hat: eighth notes with accents
+pattern hat_eighths {
+    hit: x:0.8 .     x:0.5 .     x:0.8 .     x:0.5 .     x:0.8 .     x:0.5 .     x:0.8 .     x:0.5 .
+}
+
+pattern hat_sixteenths {
+    hit: x:0.7 x:0.4 x:0.5 x:0.4 x:0.7 x:0.4 x:0.5 x:0.4 x:0.7 x:0.4 x:0.5 x:0.4 x:0.7 x:0.4 x:0.5 x:0.4
+}
+
+# Open hat on the off-beats
+pattern ohat_basic {
+    hit: .     .     .     .     .     .     x:0.7 .     .     .     .     .     .     .     x:0.7 .
+}
+
+pattern ohat_fill {
+    hit: .     .     x:0.6 .     .     .     x:0.8 .     .     .     x:0.6 .     x:0.9 .     x:0.7 .
+}
+
+# Clap layered with snare
+pattern clap_basic {
+    hit: .     .     .     .     x:0.9 .     .     .     .     .     .     .     x:0.9 .     .     .
+}
+
+pattern clap_fill {
+    hit: .     .     .     .     x:0.9 .     .     .     .     .     x:0.6 .     x:1.0 .     x:0.5 x:0.4
+}
+
+# Tom fill patterns
+pattern tom_rest {
+    hit: .     .     .     .     .     .     .     .     .     .     .     .     .     .     .     .
+}
+
+pattern tom_fill {
+    hit: .     .     .     .     .     .     .     .     x:0.8 .     x:0.7 .     x:0.9 x:0.6 x:1.0 .
+}
+
+# Claves: syncopated Latin-ish pattern (3-2 son clave)
+pattern claves_clave {
+    hit: x:0.8 .     .     x:0.7 .     .     x:0.9 .     .     .     x:0.7 .     x:0.8 .     .     .
+}
+
+pattern claves_rest {
+    hit: .     .     .     .     .     .     .     .     .     .     .     .     .     .     .     .
+}
+
+# Cymbal: crash on bar 1
+pattern cymbal_crash {
+    hit: x:1.0 .     .     .     .     .     .     .     .     .     .     .     .     .     .     .
+}
+
+pattern cymbal_rest {
+    hit: .     .     .     .     .     .     .     .     .     .     .     .     .     .     .     .
+}
+
+# ── Song ──────────────────────────────────────────────────────────────────
+
+song drums(kick, snare, hat, ohat, clap, tom, claves, cymbal) {
+    play {
+        kick_basic,      snare_basic, hat_eighths,    ohat_basic, clap_basic, tom_rest, claves_rest,  cymbal_crash
+        kick_basic,      snare_basic, hat_eighths,    ohat_basic, clap_basic, tom_rest, claves_clave, cymbal_rest
+        kick_syncopated, snare_busy,  hat_sixteenths, ohat_basic, clap_basic, tom_rest, claves_clave, cymbal_rest
+        kick_syncopated, snare_busy,  hat_sixteenths, ohat_fill,  clap_fill,  tom_fill, claves_clave, cymbal_crash
+    }
+}
+
+# ── Patch ─────────────────────────────────────────────────────────────────
+
+patch {
+    # ── Sequencer ─────────────────────────────────────────────────────────
+    module seq: MasterSequencer([kick, snare, hat, ohat, clap, tom, claves, cymbal]) {
+        song: drums,
+        bpm: 120,
+        rows_per_beat: 4,
+        loop: true,
+        autostart: true,
+        swing: 0.55
+    }
+
+    # ── Pattern players (one per drum voice) ──────────────────────────────
+    module kick_pp:   PatternPlayer([hit])
+    module snare_pp:  PatternPlayer([hit])
+    module hat_pp:    PatternPlayer([hit])
+    module ohat_pp:   PatternPlayer([hit])
+    module clap_pp:   PatternPlayer([hit])
+    module tom_pp:    PatternPlayer([hit])
+    module claves_pp: PatternPlayer([hit])
+    module cymbal_pp: PatternPlayer([hit])
+
+    seq.clock[kick]   -> kick_pp.clock
+    seq.clock[snare]  -> snare_pp.clock
+    seq.clock[hat]    -> hat_pp.clock
+    seq.clock[ohat]   -> ohat_pp.clock
+    seq.clock[clap]   -> clap_pp.clock
+    seq.clock[tom]    -> tom_pp.clock
+    seq.clock[claves] -> claves_pp.clock
+    seq.clock[cymbal] -> cymbal_pp.clock
+
+    # ── Drum modules (velocity wired directly via native velocity input) ─
+
+    module kick_drum: Kick2 {
+        tune: 55, q: 55, pulse_ms: 2.5, drive: 0.4, attack: 0.6
+    }
+    kick_pp.trigger[hit] -> kick_drum.trigger, ~trigger_led(kick_t)
+    kick_pp.cv2[hit]     -> kick_drum.velocity
+
+    module snare_drum: Snare {
+        pitch: 190, tone: 0.55, body_decay: 0.12, noise_decay: 0.18,
+        noise_freq: 3500, noise_q: 0.25, snap: 0.6
+    }
+    snare_pp.trigger[hit] -> snare_drum.trigger, ~trigger_led(snare_t)
+    snare_pp.cv2[hit]     -> snare_drum.velocity
+
+    module closed_hat: ClosedHiHat {
+        pitch: 420, decay: 0.035, tone: 0.6, filter: 9000
+    }
+    hat_pp.trigger[hit] -> closed_hat.trigger, ~trigger_led(closed_hat)
+    hat_pp.cv2[hit]     -> closed_hat.velocity
+
+    module open_hat: OpenHiHat {
+        pitch: 420, decay: 0.45, tone: 0.55, filter: 8000
+    }
+    ohat_pp.trigger[hit] -> open_hat.trigger
+    # Closed hat chokes the open hat
+    hat_pp.trigger[hit]  -> open_hat.choke
+    ohat_pp.cv2[hit]     -> open_hat.velocity
+
+    module clap_drum: Clap {
+        decay: 0.25, filter: 1400, q: 0.35, spread: 0.5, bursts: 4
+    }
+    clap_pp.trigger[hit] -> clap_drum.trigger
+    clap_pp.cv2[hit]     -> clap_drum.velocity
+
+    module tom_drum: Tom2 {
+        tune: 110, q: 35, pulse_ms: 1.5, drive: 0.5, attack: 0.7
+    }
+    tom_pp.trigger[hit] -> tom_drum.trigger
+    tom_pp.cv2[hit]     -> tom_drum.velocity
+
+    module claves_drum: Claves2 {
+        tune: 2800, q: 50, cascade_mix: 0.7, pulse_ms: 0.4, clip: 0.2
+    }
+    claves_pp.trigger[hit] -> claves_drum.trigger
+    claves_pp.cv2[hit]     -> claves_drum.velocity
+
+    module cymbal_drum: Cymbal {
+        pitch: 550, decay: 3.0, tone: 0.5, filter: 5500, shimmer: 0.25
+    }
+    cymbal_pp.trigger[hit] -> cymbal_drum.trigger
+    cymbal_pp.cv2[hit]     -> cymbal_drum.velocity
+
+    # ── Per-voice effects ──────────────────────────────────────────────────
+
+    # Kick: saturate drive for warmth, transient shaper for punch
+    module kick_drive: Drive {
+        mode: saturate, drive: 3.0, tone: 0.4, bias: 0.1, mix: 0.7
+    }
+    module kick_trans: TransientShaper {
+        attack: 0.6, sustain: -0.2, speed: 10.0, mix: 0.8
+    }
+    kick_drum.out -> kick_drive.in
+    kick_drive.out -> kick_trans.in
+
+    # Snare: fold distortion for edge, transient shaper to tighten
+    module snare_drive: Drive {
+        mode: fold, drive: 2.5, tone: 0.6, bias: 0.0, mix: 0.5
+    }
+    module snare_trans: TransientShaper {
+        attack: 0.4, sustain: -0.3, speed: 8.0, mix: 0.7
+    }
+    snare_drum.out -> snare_drive.in
+    snare_drive.out -> snare_trans.in
+
+    # Closed hat: bitcrusher for lo-fi texture
+    module hat_crush: Bitcrusher {
+        rate: 0.7, depth: 10.0, dry_wet: 0.4
+    }
+    closed_hat.out -> hat_crush.in
+
+    # Clap: crush drive for gritty digital character
+    module clap_drive: Drive {
+        mode: crush, drive: 4.0, tone: 0.5, bias: 0.0, mix: 0.5
+    }
+    clap_drum.out -> clap_drive.in
+
+    # Tom: clip drive for aggression
+    module tom_drive: Drive {
+        mode: clip, drive: 2.0, tone: 0.35, bias: 0.0, mix: 0.4
+    }
+    tom_drum.out -> tom_drive.in
+
+    # ── Mixer: 8 channels panned across the stereo field ─────────────────
+    module mix: StereoMixer(8) {
+        @0: { level: 0.85, pan: 0.0 },
+        @1: { level: 0.75, pan: -0.1 },
+        @2: { level: 0.55, pan: 0.3 },
+        @3: { level: 0.55, pan: -0.3 },
+        @4: { level: 0.65, pan: 0.15, send_a: 0.2 },
+        @5: { level: 0.7,  pan: -0.25 },
+        @6: { level: 0.4,  pan: 0.45, send_a: 0.3 },
+        @7: { level: 0.5,  pan: 0.0,  send_a: 0.15 }
+    }
+
+    kick_trans.out  -> mix.in[0]
+    snare_trans.out -> mix.in[1]
+    hat_crush.out   -> mix.in[2]
+    open_hat.out    -> mix.in[3]
+    clap_drive.out  -> mix.in[4]
+    tom_drive.out   -> mix.in[5]
+    claves_drum.out -> mix.in[6]
+    cymbal_drum.out -> mix.in[7]
+
+    kick_trans.out -> ~spectrum+osc+meter(kick)
+    snare_trans.out -> ~spectrum(snare)
+    cymbal_drum.out -> ~spectrum(cymbal)
+
+    # ── FX: stereo delay on send A (clap + claves + cymbal) ──────────────
+    module delay: StereoDelay(2) {
+        delay_ms: 375,
+        feedback: 0.3,
+        dry_wet: 1.0
+    }
+
+    mix.send_a -> delay.in
+    delay.out  -> mix.return_a
+
+    # ── Master: reverb + limiter ──────────────────────────────────────────
+    module reverb: FdnReverb {
+        size: 0.3, brightness: 0.5, mix: 0.15, character: plate
+    }
+    module lim: StereoLimiter { threshold: 0.8 }
+
+    mix.out    -> reverb.in
+    reverb.out -> lim.in
+
+    # Stereo meter on the master bus (ADR 0059 §7): the manifest
+    # publishes `master/left` + `master/right` at consecutive slots; the
+    # ratatui player groups them into one paired widget.
+    lim.out -> ~stereo_meter(master)
+
+    module out: AudioOut
+    lim.out -> out.in
+}
