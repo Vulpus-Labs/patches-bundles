@@ -14,22 +14,28 @@
 pub mod primitives;
 
 pub mod kick;
+pub mod kick2;
 pub mod snare;
 pub mod clap_drum;
 pub mod hihat;
 pub mod tom;
+pub mod tom2;
 pub mod claves;
+pub mod claves2;
 pub mod cymbal;
 
 #[cfg(test)]
 mod test_support;
 
 pub use kick::Kick;
+pub use kick2::Kick2;
 pub use snare::Snare;
 pub use clap_drum::ClapDrum;
 pub use hihat::{ClosedHiHat, OpenHiHat};
 pub use tom::Tom;
+pub use tom2::Tom2;
 pub use claves::Claves;
+pub use claves2::Claves2;
 pub use cymbal::Cymbal;
 
 /// Register every module in this crate with the supplied registry.
@@ -40,12 +46,15 @@ pub use cymbal::Cymbal;
 /// drum cdylib is loaded the same way third-party bundles are.
 pub fn register(r: &mut patches_sdk::registry::Registry) {
     r.register::<Kick>();
+    r.register::<Kick2>();
     r.register::<Snare>();
     r.register::<ClapDrum>();
     r.register::<ClosedHiHat>();
     r.register::<OpenHiHat>();
     r.register::<Tom>();
+    r.register::<Tom2>();
     r.register::<Claves>();
+    r.register::<Claves2>();
     r.register::<Cymbal>();
 }
 
@@ -56,12 +65,15 @@ pub fn register(r: &mut patches_sdk::registry::Registry) {
 // `patches_plugin_init` symbol that `PluginScanner` reads.
 patches_sdk::export_modules! {
     (ffi_kick,         Kick,         "Kick",         1),
+    (ffi_kick2,        Kick2,        "Kick2",        1),
     (ffi_snare,        Snare,        "Snare",        1),
     (ffi_clap_drum,    ClapDrum,     "Clap",         1),
     (ffi_closed_hihat, ClosedHiHat,  "ClosedHiHat",  1),
     (ffi_open_hihat,   OpenHiHat,    "OpenHiHat",    1),
     (ffi_tom,          Tom,          "Tom",          1),
+    (ffi_tom2,         Tom2,         "Tom2",         1),
     (ffi_claves,       Claves,       "Claves",       1),
+    (ffi_claves2,      Claves2,      "Claves2",      1),
     (ffi_cymbal,       Cymbal,       "Cymbal",       1),
 }
 
@@ -76,12 +88,15 @@ mod ffi_bundle_tests {
 
     const EXPECTED_NAMES: &[&str] = &[
         "Kick",
+        "Kick2",
         "Snare",
         "Clap",
         "ClosedHiHat",
         "OpenHiHat",
         "Tom",
+        "Tom2",
         "Claves",
+        "Claves2",
         "Cymbal",
     ];
 
