@@ -33,7 +33,7 @@
 //! | Name | Type | Range | Default | Description |
 //! |------|------|-------|---------|-------------|
 //! | `variant` | enum | `bright`/`dark` | `bright` | Voicing |
-//! | `mode` | enum | `off`/`one`/`two`/`both` | `one` | Chorus mode (`both` only valid on `bright`) |
+//! | `mode` | enum | `off`/`one`/`two`/`both` | `one` | Chorus mode (`both` is bright-only; on `dark` it coerces to mode II) |
 //! | `hiss` | float | 0.0--1.0 | `1.0` | Wet-path hiss amount |
 
 use patches_sdk::module_params;

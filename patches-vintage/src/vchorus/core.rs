@@ -67,9 +67,12 @@ fn mode_table(variant: Variant, mode: Mode) -> ModeTable {
             delay_min_s: 0.00166,
             delay_max_s: 0.00535,
         },
-        // Dark has no genuine `both`; rejection at bind time is impl
-        // detail — silently fall back to mode II so that an invalid
-        // combination doesn't crash.
+        // `(Dark, Both)` is not a real hardware mode. Both `mode` and
+        // `variant` are realtime params, so descriptor validation
+        // can't reject the combination — we silently coerce to
+        // `Mode::Two` rather than panicking. Documented in the module
+        // parameter table; a future structural-param refactor (ADR
+        // 0060) could make this a true bind-time error.
         (Variant::Dark, Mode::Two) | (Variant::Dark, Mode::Both) => ModeTable {
             rate_hz: 0.83,
             delay_min_s: 0.00166,

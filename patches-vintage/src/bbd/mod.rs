@@ -55,15 +55,17 @@ fn default_pole_pairs() -> [Complex32; 2] {
 
 /// Residues (one per pair) normalised so the filter's DC gain
 /// `2·Σ Re(-r/p)` over the halves is exactly 1.
+///
+/// Both raw residues are unit complex `1.0 + 0i`, so `-r/p` reduces
+/// to `-1/p` per pair and the DC-gain sum collapses to
+/// `2·(Re(-1/p₀) + Re(-1/p₁))`. The two output residues end up
+/// identical (`1/g`); the loop the previous implementation used hid
+/// that fact under a "per-residue" pretence.
 fn normalised_pair_residues(poles: &[Complex32; 2]) -> [Complex32; 2] {
-    let raw = [Complex32::new(1.0, 0.0); 2];
-    let mut g = 0.0_f32;
-    for (p, r) in poles.iter().zip(raw.iter()) {
-        let q = -*r / *p;
-        g += 2.0 * q.re;
-    }
+    let g = 2.0 * ((-Complex32::new(1.0, 0.0) / poles[0]).re
+        + (-Complex32::new(1.0, 0.0) / poles[1]).re);
     let inv_g = 1.0 / g;
-    [raw[0] * inv_g, raw[1] * inv_g]
+    [Complex32::new(inv_g, 0.0); 2]
 }
 
 /// Bucket-brigade delay line.

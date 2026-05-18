@@ -340,176 +340,261 @@ impl BbdProto {
     }
 
     pub fn process(&mut self, input: f32) -> f32 {
-        let buckets = &mut self.buckets;
-        let len = buckets.len();
-        let mut ptr = self.buffer_ptr;
-        let sat = self.saturation_drive;
-        let inv_sat = self.saturation_inv_drive;
-
-        self.read_events.clear();
-        let read_events = &mut self.read_events;
-
+        // Split per-arm so each variant's lifetime over `&mut self.banks`
+        // is bounded; the dispatch here is the only place that knows
+        // about both arms.
         match &mut self.banks {
-            Banks::Aos { input: input_bank, output: output_bank } => {
-                let ib = &*input_bank;
-                // Apply jitter after any ramp adjustment (AoS path snaps
-                // the clock in `set_delay`, so no ramp work happens in
-                // process — jitter just overwrites the static clock).
-                if self.jitter_amount > 0.0 {
-                    if self.jitter_counter == 0 {
-                        self.jitter_value = self.jitter_walk.advance();
-                    }
-                    self.jitter_counter = (self.jitter_counter + 1) % JITTER_WALK_INTERVAL;
-                    let factor =
-                        1.0 + self.jitter_value * self.jitter_amount * JITTER_MAX_DEPTH;
-                    self.clock.set_bbd_ts(self.bbd_ts_cur * factor);
-                }
-                self.clock.step(|tick| match tick.phase {
-                    TickPhase::Write => {
-                        let raw = ib.evaluate(tick.tau, input);
-                        let charge = if sat > 0.0 {
-                            fast_tanh(sat * raw) * inv_sat
-                        } else {
-                            raw
-                        };
-                        buckets[ptr] = charge;
-                        ptr += 1;
-                        if ptr == len {
-                            ptr = 0;
-                        }
-                    }
-                    TickPhase::Read => {
-                        let bucket_val = buckets[ptr];
-                        read_events.push((tick.tau, bucket_val));
-                    }
-                });
-                self.buffer_ptr = ptr;
-                input_bank.advance(input);
-
-                let mut last_tau = 0.0_f32;
-                let mut current_bucket = self.last_bucket_read;
-                for &(tau, new_bucket) in read_events.iter() {
-                    let dtau = tau - last_tau;
-                    if dtau > 0.0 {
-                        output_bank.advance_by(dtau, current_bucket);
-                    }
-                    last_tau = tau;
-                    current_bucket = new_bucket;
-                }
-                let dtau_tail = 1.0 - last_tau;
-                if dtau_tail > 0.0 {
-                    output_bank.advance_by(dtau_tail, current_bucket);
-                }
-                self.last_bucket_read = current_bucket;
-                output_bank.real_output()
-            }
-            Banks::Soa { input: input_bank, output: output_bank, phi_re, phi_im } => {
-                // Advance any in-flight delay-smoothing ramp one
-                // sample. bbd_ts and per-pole alpha interpolate
-                // linearly toward their targets over
-                // `smoothing_interval` samples.
-                if self.ramp_samples_remaining > 0 {
-                    self.bbd_ts_cur += self.bbd_ts_step;
-                    input_bank.advance_alpha_smoothing();
-                    output_bank.advance_alpha_smoothing();
-                    self.ramp_samples_remaining -= 1;
-                    if self.ramp_samples_remaining == 0 {
-                        // Snap to eliminate float accumulation drift.
-                        self.bbd_ts_cur = self.bbd_ts_target;
-                        self.bbd_ts_step = 0.0;
-                        input_bank.snap_alpha_to_target();
-                        output_bank.snap_alpha_to_target();
-                    }
-                    self.clock.set_bbd_ts(self.bbd_ts_cur);
-                }
-
-                // Clock-jitter perturbation on top of the ramp. When
-                // amount=0 this block is skipped entirely, preserving
-                // bit-for-bit equivalence to a non-jittered build.
-                if self.jitter_amount > 0.0 {
-                    if self.jitter_counter == 0 {
-                        self.jitter_value = self.jitter_walk.advance();
-                    }
-                    self.jitter_counter = (self.jitter_counter + 1) % JITTER_WALK_INTERVAL;
-                    let factor =
-                        1.0 + self.jitter_value * self.jitter_amount * JITTER_MAX_DEPTH;
-                    self.clock.set_bbd_ts(self.bbd_ts_cur * factor);
-                }
-
-                // Incremental-phasor state for Writes within this
-                // sample: the first Write computes phi via exp; each
-                // subsequent Write multiplies phi by the precomputed
-                // tick alpha — no exp on the hot path.
-                let mut have_phi = false;
-                let ib = &*input_bank;
-                let phi_re_s = &mut phi_re[..];
-                let phi_im_s = &mut phi_im[..];
-
-                self.clock.step(|tick| match tick.phase {
-                    TickPhase::Write => {
-                        if !have_phi {
-                            ib.fill_phi(tick.tau, phi_re_s, phi_im_s);
-                            have_phi = true;
-                        } else {
-                            ib.step_phi(phi_re_s, phi_im_s);
-                        }
-                        let raw = ib.evaluate_with_phi(phi_re_s, phi_im_s, input);
-                        let charge = if sat > 0.0 {
-                            fast_tanh(sat * raw) * inv_sat
-                        } else {
-                            raw
-                        };
-                        buckets[ptr] = charge;
-                        ptr += 1;
-                        if ptr == len {
-                            ptr = 0;
-                        }
-                    }
-                    TickPhase::Read => {
-                        let bucket_val = buckets[ptr];
-                        read_events.push((tick.tau, bucket_val));
-                    }
-                });
-                self.buffer_ptr = ptr;
-                input_bank.advance(input);
-
-                // Output segments: first (variable Δτ) uses inline
-                // exp; middle segments all share `2·bbd_ts/host_ts` so
-                // reuse the cached alpha table as phi; tail uses
-                // inline exp again.
-                let mut last_tau = 0.0_f32;
-                let mut current_bucket = self.last_bucket_read;
-                let mut is_first = true;
-                let nout = output_bank.len();
-                for &(tau, new_bucket) in read_events.iter() {
-                    let dtau = tau - last_tau;
-                    if dtau > 0.0 {
-                        if is_first {
-                            output_bank.advance_by(dtau, current_bucket);
-                            is_first = false;
-                        } else {
-                            output_bank.copy_alpha_into(
-                                &mut phi_re[..nout],
-                                &mut phi_im[..nout],
-                            );
-                            output_bank.advance_by_phi(
-                                &phi_re[..nout],
-                                &phi_im[..nout],
-                                current_bucket,
-                            );
-                        }
-                    }
-                    last_tau = tau;
-                    current_bucket = new_bucket;
-                }
-                let dtau_tail = 1.0 - last_tau;
-                if dtau_tail > 0.0 {
-                    output_bank.advance_by(dtau_tail, current_bucket);
-                }
-                self.last_bucket_read = current_bucket;
-                output_bank.real_output()
-            }
+            Banks::Aos { .. } => Self::process_aos(
+                &mut self.banks,
+                &mut self.buckets,
+                &mut self.buffer_ptr,
+                &mut self.read_events,
+                &mut self.last_bucket_read,
+                &mut self.clock,
+                &mut self.jitter_walk,
+                &mut self.jitter_counter,
+                &mut self.jitter_value,
+                self.jitter_amount,
+                self.bbd_ts_cur,
+                self.saturation_drive,
+                self.saturation_inv_drive,
+                input,
+            ),
+            Banks::Soa { .. } => Self::process_soa(
+                &mut self.banks,
+                &mut self.buckets,
+                &mut self.buffer_ptr,
+                &mut self.read_events,
+                &mut self.last_bucket_read,
+                &mut self.clock,
+                &mut self.jitter_walk,
+                &mut self.jitter_counter,
+                &mut self.jitter_value,
+                self.jitter_amount,
+                &mut self.bbd_ts_cur,
+                &mut self.bbd_ts_step,
+                self.bbd_ts_target,
+                &mut self.ramp_samples_remaining,
+                self.saturation_drive,
+                self.saturation_inv_drive,
+                input,
+            ),
         }
+    }
+
+    /// AoS path: snap-clock + jitter, no ramp/phasor state. See
+    /// `process_soa` for the SoA path that adds delay-smoothing ramp
+    /// and the incremental phasor scratch.
+    #[allow(clippy::too_many_arguments)]
+    fn process_aos(
+        banks: &mut Banks,
+        buckets: &mut [f32],
+        buffer_ptr: &mut usize,
+        read_events: &mut Vec<(f32, f32)>,
+        last_bucket_read: &mut f32,
+        clock: &mut BbdClock,
+        jitter_walk: &mut BoundedRandomWalk,
+        jitter_counter: &mut u32,
+        jitter_value: &mut f32,
+        jitter_amount: f32,
+        bbd_ts_cur: f32,
+        sat: f32,
+        inv_sat: f32,
+        input: f32,
+    ) -> f32 {
+        let (input_bank, output_bank) = match banks {
+            Banks::Aos { input, output } => (input, output),
+            Banks::Soa { .. } => unreachable!("process_aos called on SoA banks"),
+        };
+        let len = buckets.len();
+        let mut ptr = *buffer_ptr;
+        read_events.clear();
+
+        // Apply jitter after any ramp adjustment (AoS path snaps the
+        // clock in `set_delay`, so no ramp work happens in process —
+        // jitter just overwrites the static clock).
+        if jitter_amount > 0.0 {
+            if *jitter_counter == 0 {
+                *jitter_value = jitter_walk.advance();
+            }
+            *jitter_counter = (*jitter_counter + 1) % JITTER_WALK_INTERVAL;
+            let factor = 1.0 + *jitter_value * jitter_amount * JITTER_MAX_DEPTH;
+            clock.set_bbd_ts(bbd_ts_cur * factor);
+        }
+
+        let ib = &*input_bank;
+        clock.step(|tick| match tick.phase {
+            TickPhase::Write => {
+                let raw = ib.evaluate(tick.tau, input);
+                let charge = if sat > 0.0 {
+                    fast_tanh(sat * raw) * inv_sat
+                } else {
+                    raw
+                };
+                buckets[ptr] = charge;
+                ptr += 1;
+                if ptr == len {
+                    ptr = 0;
+                }
+            }
+            TickPhase::Read => {
+                read_events.push((tick.tau, buckets[ptr]));
+            }
+        });
+        *buffer_ptr = ptr;
+        input_bank.advance(input);
+
+        let mut last_tau = 0.0_f32;
+        let mut current_bucket = *last_bucket_read;
+        for &(tau, new_bucket) in read_events.iter() {
+            let dtau = tau - last_tau;
+            if dtau > 0.0 {
+                output_bank.advance_by(dtau, current_bucket);
+            }
+            last_tau = tau;
+            current_bucket = new_bucket;
+        }
+        let dtau_tail = 1.0 - last_tau;
+        if dtau_tail > 0.0 {
+            output_bank.advance_by(dtau_tail, current_bucket);
+        }
+        *last_bucket_read = current_bucket;
+        output_bank.real_output()
+    }
+
+    /// SoA path: delay-smoothing ramp + jitter on top, plus the
+    /// incremental phasor reuse on both the Write and the
+    /// intra-sample output segments. The first Write fills `phi` via
+    /// `exp`; subsequent Writes multiply by the tick-alpha cached on
+    /// the bank.
+    #[allow(clippy::too_many_arguments)]
+    fn process_soa(
+        banks: &mut Banks,
+        buckets: &mut [f32],
+        buffer_ptr: &mut usize,
+        read_events: &mut Vec<(f32, f32)>,
+        last_bucket_read: &mut f32,
+        clock: &mut BbdClock,
+        jitter_walk: &mut BoundedRandomWalk,
+        jitter_counter: &mut u32,
+        jitter_value: &mut f32,
+        jitter_amount: f32,
+        bbd_ts_cur: &mut f32,
+        bbd_ts_step: &mut f32,
+        bbd_ts_target: f32,
+        ramp_samples_remaining: &mut u32,
+        sat: f32,
+        inv_sat: f32,
+        input: f32,
+    ) -> f32 {
+        let (input_bank, output_bank, phi_re, phi_im) = match banks {
+            Banks::Soa { input, output, phi_re, phi_im } => {
+                (input, output, phi_re, phi_im)
+            }
+            Banks::Aos { .. } => unreachable!("process_soa called on AoS banks"),
+        };
+        let len = buckets.len();
+        let mut ptr = *buffer_ptr;
+        read_events.clear();
+
+        // Advance any in-flight delay-smoothing ramp one sample. bbd_ts
+        // and per-pole alpha interpolate linearly toward their targets
+        // over `smoothing_interval` samples.
+        if *ramp_samples_remaining > 0 {
+            *bbd_ts_cur += *bbd_ts_step;
+            input_bank.advance_alpha_smoothing();
+            output_bank.advance_alpha_smoothing();
+            *ramp_samples_remaining -= 1;
+            if *ramp_samples_remaining == 0 {
+                // Snap to eliminate float accumulation drift.
+                *bbd_ts_cur = bbd_ts_target;
+                *bbd_ts_step = 0.0;
+                input_bank.snap_alpha_to_target();
+                output_bank.snap_alpha_to_target();
+            }
+            clock.set_bbd_ts(*bbd_ts_cur);
+        }
+
+        // Clock-jitter perturbation on top of the ramp. When amount=0
+        // this block is skipped entirely, preserving bit-for-bit
+        // equivalence to a non-jittered build.
+        if jitter_amount > 0.0 {
+            if *jitter_counter == 0 {
+                *jitter_value = jitter_walk.advance();
+            }
+            *jitter_counter = (*jitter_counter + 1) % JITTER_WALK_INTERVAL;
+            let factor = 1.0 + *jitter_value * jitter_amount * JITTER_MAX_DEPTH;
+            clock.set_bbd_ts(*bbd_ts_cur * factor);
+        }
+
+        // Incremental-phasor state for Writes within this sample: the
+        // first Write computes phi via exp; each subsequent Write
+        // multiplies phi by the precomputed tick alpha — no exp on the
+        // hot path.
+        let mut have_phi = false;
+        let ib = &*input_bank;
+        let phi_re_s = &mut phi_re[..];
+        let phi_im_s = &mut phi_im[..];
+
+        clock.step(|tick| match tick.phase {
+            TickPhase::Write => {
+                if !have_phi {
+                    ib.fill_phi(tick.tau, phi_re_s, phi_im_s);
+                    have_phi = true;
+                } else {
+                    ib.step_phi(phi_re_s, phi_im_s);
+                }
+                let raw = ib.evaluate_with_phi(phi_re_s, phi_im_s, input);
+                let charge = if sat > 0.0 {
+                    fast_tanh(sat * raw) * inv_sat
+                } else {
+                    raw
+                };
+                buckets[ptr] = charge;
+                ptr += 1;
+                if ptr == len {
+                    ptr = 0;
+                }
+            }
+            TickPhase::Read => {
+                read_events.push((tick.tau, buckets[ptr]));
+            }
+        });
+        *buffer_ptr = ptr;
+        input_bank.advance(input);
+
+        // Output segments: first (variable Δτ) uses inline exp; middle
+        // segments all share `2·bbd_ts/host_ts` so reuse the cached
+        // alpha table as phi; tail uses inline exp again.
+        let mut last_tau = 0.0_f32;
+        let mut current_bucket = *last_bucket_read;
+        let mut is_first = true;
+        let nout = output_bank.len();
+        for &(tau, new_bucket) in read_events.iter() {
+            let dtau = tau - last_tau;
+            if dtau > 0.0 {
+                if is_first {
+                    output_bank.advance_by(dtau, current_bucket);
+                    is_first = false;
+                } else {
+                    output_bank
+                        .copy_alpha_into(&mut phi_re[..nout], &mut phi_im[..nout]);
+                    output_bank.advance_by_phi(
+                        &phi_re[..nout],
+                        &phi_im[..nout],
+                        current_bucket,
+                    );
+                }
+            }
+            last_tau = tau;
+            current_bucket = new_bucket;
+        }
+        let dtau_tail = 1.0 - last_tau;
+        if dtau_tail > 0.0 {
+            output_bank.advance_by(dtau_tail, current_bucket);
+        }
+        *last_bucket_read = current_bucket;
+        output_bank.real_output()
     }
 }
 
