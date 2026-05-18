@@ -75,6 +75,11 @@ module_params! {
 pub(crate) const DELAY_MS_MAX: f32 = 340.0;
 pub(crate) const DELAY_MS_MIN: f32 = 1.0;
 pub(crate) const FEEDBACK_MAX: f32 = 0.95;
+/// Range applied to the delay CV before the `(1 + cv)` multiplier:
+/// CV ∈ [-1, +2] lets the CV pull the delay down to zero or scale it up
+/// to 3× the parameter value (further clamped by `DELAY_MS_MIN/MAX`).
+pub(crate) const DELAY_CV_MIN: f32 = -1.0;
+pub(crate) const DELAY_CV_MAX: f32 = 2.0;
 
 /// Per-tap DSP state.
 pub(crate) struct Tap {
@@ -101,14 +106,14 @@ impl Tap {
             fb_state: 0.0,
             fb_hp_x_prev: 0.0,
             fb_hp_y_prev: 0.0,
-            fb_hp_r: 1.0 - TAU * FB_HP_HZ / sr,
+            fb_hp_r: (-TAU * FB_HP_HZ / sr).exp(),
             fb_lp_y_prev: 0.0,
             fb_lp_alpha: 1.0 - (-TAU * FB_LP_HZ / sr).exp(),
         }
     }
 
     #[inline]
-    pub(crate) fn filter_feedback(&mut self, x: f32) -> f32 {
+    fn filter_feedback(&mut self, x: f32) -> f32 {
         let hp = patches_dsp::flush_denormal(
             x - self.fb_hp_x_prev + self.fb_hp_r * self.fb_hp_y_prev,
         );
@@ -119,6 +124,19 @@ impl Tap {
         );
         self.fb_lp_y_prev = lp;
         lp
+    }
+
+    /// Shared per-tap chain (vbbd mono and vstereobbd per side). Returns
+    /// `(tap_out, fb_filtered)`; caller multiplies by effective gain /
+    /// feedback and writes `fb_state` back with any ping-pong routing.
+    #[inline]
+    pub(crate) fn process_chain(&mut self, input: f32, fb_in: f32) -> (f32, f32) {
+        let compressed = self.comp.process(fast_tanh(input));
+        let with_fb = fast_tanh(compressed + fb_in);
+        let bbd_out = self.bbd.process(with_fb);
+        let tap_out = self.exp.process(bbd_out);
+        let fb_filtered = self.filter_feedback(bbd_out);
+        (tap_out, fb_filtered)
     }
 }
 
@@ -241,23 +259,20 @@ impl Module for VBbd {
     fn process(&mut self, pool: &mut CablePool<'_>) {
         let in_val = pool.read_mono(&self.in_port);
 
+        // Compander sits on the dry path only; feedback is summed
+        // post-compressor and the loop contains just BBD + HP/LP +
+        // tanh. Keeping compression out of the loop avoids its
+        // low-signal gain (>1) regenerating narrow-band residue.
         let mut wet_sum = 0.0_f32;
         for i in 0..self.taps {
-            // Compander sits on the dry path only; feedback is summed
-            // post-compressor and the loop contains just BBD + HP/LP +
-            // tanh. Keeping compression out of the loop avoids its
-            // low-signal gain (>1) regenerating narrow-band residue.
-            let compressed = self.tap_state[i].comp.process(fast_tanh(in_val));
-            let with_fb = fast_tanh(compressed + self.tap_state[i].fb_state);
-            let bbd_out = self.tap_state[i].bbd.process(with_fb);
-            let tap_out = self.tap_state[i].exp.process(bbd_out);
+            let fb_in = self.tap_state[i].fb_state;
+            let (tap_out, fb_filtered) = self.tap_state[i].process_chain(in_val, fb_in);
 
             let eff_gain = (self.gains[i] + pool.read_mono(&self.gain_cv[i])).clamp(0.0, 1.0);
             wet_sum += tap_out * eff_gain;
 
             let eff_fb =
                 (self.feedbacks[i] + pool.read_mono(&self.fb_cv[i])).clamp(0.0, FEEDBACK_MAX);
-            let fb_filtered = self.tap_state[i].filter_feedback(bbd_out);
             self.tap_state[i].fb_state = patches_dsp::flush_denormal(fb_filtered * eff_fb);
         }
 
@@ -277,7 +292,7 @@ impl Module for VBbd {
         // per Periodic tick per tap is enough. The BBD smooths
         // internally across its own (finer) smoothing interval.
         for i in 0..self.taps {
-            let cv = pool.read_mono(&self.delay_cv[i]).clamp(-1.0, 2.0);
+            let cv = pool.read_mono(&self.delay_cv[i]).clamp(DELAY_CV_MIN, DELAY_CV_MAX);
             let delay_s = (self.delay_ms[i] * (1.0 + cv) * 0.001)
                 .clamp(DELAY_MS_MIN * 0.001, DELAY_MS_MAX * 0.001);
             self.tap_state[i].bbd.set_delay_seconds(delay_s);

@@ -44,7 +44,9 @@ impl ModeTable {
 
 fn mode_table(variant: Variant, mode: Mode) -> ModeTable {
     match (variant, mode) {
-        (Variant::Bright, Mode::One) => ModeTable {
+        // Off and One share timings on both variants; depth is zeroed at
+        // runtime when `mode == Off`.
+        (Variant::Bright, Mode::One) | (Variant::Bright, Mode::Off) => ModeTable {
             rate_hz: 0.513,
             delay_min_s: 0.00166,
             delay_max_s: 0.00535,
@@ -59,7 +61,7 @@ fn mode_table(variant: Variant, mode: Mode) -> ModeTable {
             delay_min_s: 0.00330,
             delay_max_s: 0.00370,
         },
-        (Variant::Dark, Mode::One) => ModeTable {
+        (Variant::Dark, Mode::One) | (Variant::Dark, Mode::Off) => ModeTable {
             rate_hz: 0.5,
             delay_min_s: 0.00166,
             delay_max_s: 0.00535,
@@ -69,17 +71,6 @@ fn mode_table(variant: Variant, mode: Mode) -> ModeTable {
         // combination doesn't crash.
         (Variant::Dark, Mode::Two) | (Variant::Dark, Mode::Both) => ModeTable {
             rate_hz: 0.83,
-            delay_min_s: 0.00166,
-            delay_max_s: 0.00535,
-        },
-        // Off: inherit mode I timings but depth gets zeroed at runtime.
-        (Variant::Bright, Mode::Off) => ModeTable {
-            rate_hz: 0.513,
-            delay_min_s: 0.00166,
-            delay_max_s: 0.00535,
-        },
-        (Variant::Dark, Mode::Off) => ModeTable {
-            rate_hz: 0.5,
             delay_min_s: 0.00166,
             delay_max_s: 0.00535,
         },

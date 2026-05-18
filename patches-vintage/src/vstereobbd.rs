@@ -47,9 +47,8 @@ use patches_sdk::{
     ParameterTemplate, PortTemplate, StereoInput, StereoOutput,
 };
 use patches_sdk::{StructuralParams, BuildError};
-use patches_dsp::approximate::fast_tanh;
 
-use crate::vbbd::{Tap, DELAY_MS_MAX, DELAY_MS_MIN, FEEDBACK_MAX};
+use crate::vbbd::{Tap, DELAY_CV_MAX, DELAY_CV_MIN, DELAY_MS_MAX, DELAY_MS_MIN, FEEDBACK_MAX};
 
 module_params! {
     VStereoBbd {
@@ -205,17 +204,8 @@ impl Module for VStereoBbd {
             let fb_l_in = self.taps_l[i].fb_state;
             let fb_r_in = self.taps_r[i].fb_state;
 
-            let comp_l = self.taps_l[i].comp.process(fast_tanh(in_l));
-            let comp_r = self.taps_r[i].comp.process(fast_tanh(in_r));
-
-            let with_fb_l = fast_tanh(comp_l + fb_l_in);
-            let with_fb_r = fast_tanh(comp_r + fb_r_in);
-
-            let bbd_l = self.taps_l[i].bbd.process(with_fb_l);
-            let bbd_r = self.taps_r[i].bbd.process(with_fb_r);
-
-            let tap_l = self.taps_l[i].exp.process(bbd_l);
-            let tap_r = self.taps_r[i].exp.process(bbd_r);
+            let (tap_l, fb_l_filt) = self.taps_l[i].process_chain(in_l, fb_l_in);
+            let (tap_r, fb_r_filt) = self.taps_r[i].process_chain(in_r, fb_r_in);
 
             let eff_gain = (self.gains[i] + pool.read_mono(&self.gain_cv[i])).clamp(0.0, 1.0);
             wet_l += tap_l * eff_gain;
@@ -223,8 +213,6 @@ impl Module for VStereoBbd {
 
             let eff_fb =
                 (self.feedbacks[i] + pool.read_mono(&self.fb_cv[i])).clamp(0.0, FEEDBACK_MAX);
-            let fb_l_filt = self.taps_l[i].filter_feedback(bbd_l);
-            let fb_r_filt = self.taps_r[i].filter_feedback(bbd_r);
             let (l, r) = if self.pingpong[i] {
                 (fb_r_filt * eff_fb, fb_l_filt * eff_fb)
             } else {
@@ -250,7 +238,7 @@ impl Module for VStereoBbd {
 
     fn periodic_update(&mut self, pool: &CablePool<'_>) {
         for i in 0..self.taps {
-            let cv = pool.read_mono(&self.delay_cv[i]).clamp(-1.0, 2.0);
+            let cv = pool.read_mono(&self.delay_cv[i]).clamp(DELAY_CV_MIN, DELAY_CV_MAX);
             let delay_s = (self.delay_ms[i] * (1.0 + cv) * 0.001)
                 .clamp(DELAY_MS_MIN * 0.001, DELAY_MS_MAX * 0.001);
             self.taps_l[i].bbd.set_delay_seconds(delay_s);

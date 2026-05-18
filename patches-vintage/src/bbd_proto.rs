@@ -535,23 +535,11 @@ mod tests {
         ]
     }
 
-    /// Residues chosen so `Σ -r/p ≈ 1`, giving near-unity DC gain.
-    /// Computed by inverting the DC-gain equation for this specific
-    /// pole choice.
+    /// Unit residues. `normalised_residues` rescales these so DC gain
+    /// is exactly 1.0 for the chosen poles — that's why the raw values
+    /// don't have to be carefully chosen.
     fn demo_input_residues() -> Vec<Complex32> {
-        // For each conjugate pair, choose residue r so that
-        // 2·Re(r/p) equals a target DC contribution. Sum to 1.
-        // Here we pick r_k = -p_k / 2 for each pair, which gives
-        // 2·Re(-0.5) = -1 per pair, summing to -2... no. Let me just
-        // set all residues to |p|² / (2·conjugate_count) s.t.
-        // Σ -r/p = 1 empirically at unit magnitude. Normalise at test
-        // time instead.
-        vec![
-            Complex32::new(1.0, 0.0),
-            Complex32::new(1.0, 0.0),
-            Complex32::new(1.0, 0.0),
-            Complex32::new(1.0, 0.0),
-        ]
+        vec![Complex32::new(1.0, 0.0); 4]
     }
 
     fn dc_gain(poles: &[Complex32], residues: &[Complex32]) -> f32 {

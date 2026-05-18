@@ -71,6 +71,9 @@ module_params! {
 
 const DECAY_MAX: f32 = 0.95;
 const N: usize = 8;
+/// Normalisation for the 8-tap orthogonal stereo pickoff: dividing by
+/// `sqrt(N)` keeps `wet_l` and `wet_r` energy independent of the tap count.
+const WET_NORM: f32 = 0.353_553_4; // 1.0 / sqrt(8)
 
 /// Two-pole reconstruction / damping LPF on each BBD output. `damping = 0`
 /// → bright (8 kHz), `damping = 1` → dark (1.2 kHz). Even the brightest
@@ -286,9 +289,8 @@ impl Module for VReverb {
 
         // Decorrelated stereo pickoff: alternating signs across the
         // eight taps so L and R draw on orthogonal state combinations.
-        let norm = 1.0 / (N as f32).sqrt();
-        let wet_l = norm * (y[0] - y[1] + y[2] - y[3] + y[4] - y[5] + y[6] - y[7]);
-        let wet_r = norm * (y[0] + y[1] - y[2] - y[3] + y[4] + y[5] - y[6] - y[7]);
+        let wet_l = WET_NORM * (y[0] - y[1] + y[2] - y[3] + y[4] - y[5] + y[6] - y[7]);
+        let wet_r = WET_NORM * (y[0] + y[1] - y[2] - y[3] + y[4] + y[5] - y[6] - y[7]);
 
         let eff_dw = (self.dry_wet + pool.read_mono(&self.drywet_cv)).clamp(0.0, 1.0);
         pool.write_stereo(

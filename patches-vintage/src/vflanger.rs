@@ -126,7 +126,12 @@ impl Module for VFlanger {
             descriptor,
             core: {
                 let mut c = VFlangerCore::new(env.sample_rate);
-                c.set_jitter_seed((instance_id.as_u64() ^ 0xBBD0_0020) as u32);
+                // Per-module seed salt — keep distinct from sibling BBD-based
+                // modules so two instances with the same `instance_id`
+                // (different modules) decorrelate their jitter streams.
+                //   0x0001 vbbd, 0x0010 vchorus, 0x0020 vstereobbd,
+                //   0x0030 vflanger_stereo, 0x0040 vreverb, 0x0050 vflanger.
+                c.set_jitter_seed((instance_id.as_u64() ^ 0xBBD0_0050) as u32);
                 c
             },
             in_port: MonoInput::default(),
