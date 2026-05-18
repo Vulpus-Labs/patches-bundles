@@ -47,11 +47,11 @@ use patches_sdk::{
 };
 use patches_sdk::{StructuralParams, BuildError};
 use patches_dsp::approximate::fast_tanh;
-use std::f32::consts::TAU;
 
 use crate::bbd::{Bbd, BbdDevice};
 
 use crate::compander::{CompanderParams, Compressor, Expander};
+use crate::primitives::{OnePoleHpf, OnePoleLpf};
 
 // Feedback-path loop filter: DC block + LP damping to stop narrow-band
 // self-oscillation ("ticking") at the comb's resonant peak.
@@ -88,42 +88,32 @@ pub(crate) struct Tap {
     pub(crate) exp: Expander,
     /// Feedback value carried from the previous tick.
     pub(crate) fb_state: f32,
-    // One-pole HP (DC block) state for the feedback path.
-    fb_hp_x_prev: f32,
-    fb_hp_y_prev: f32,
-    fb_hp_r: f32,
-    // One-pole LP state for the feedback path.
-    fb_lp_y_prev: f32,
-    fb_lp_alpha: f32,
+    /// DC blocker on the feedback path (stops narrow-band self-osc).
+    fb_hp: OnePoleHpf,
+    /// LP damping on the feedback path.
+    fb_lp: OnePoleLpf,
 }
 
 impl Tap {
     pub(crate) fn new(sr: f32, smoothing_interval: u32) -> Self {
+        let mut fb_hp = OnePoleHpf::default();
+        fb_hp.set_cutoff(FB_HP_HZ, sr);
+        let mut fb_lp = OnePoleLpf::default();
+        fb_lp.set_cutoff(FB_LP_HZ, sr);
         Self {
             bbd: Bbd::new_with_smoothing_interval(&BbdDevice::BBD_4096, sr, smoothing_interval),
             comp: Compressor::new(CompanderParams::NE570_DEFAULT, sr),
             exp: Expander::new(CompanderParams::NE570_DEFAULT, sr),
             fb_state: 0.0,
-            fb_hp_x_prev: 0.0,
-            fb_hp_y_prev: 0.0,
-            fb_hp_r: (-TAU * FB_HP_HZ / sr).exp(),
-            fb_lp_y_prev: 0.0,
-            fb_lp_alpha: 1.0 - (-TAU * FB_LP_HZ / sr).exp(),
+            fb_hp,
+            fb_lp,
         }
     }
 
     #[inline]
     fn filter_feedback(&mut self, x: f32) -> f32 {
-        let hp = patches_dsp::flush_denormal(
-            x - self.fb_hp_x_prev + self.fb_hp_r * self.fb_hp_y_prev,
-        );
-        self.fb_hp_x_prev = x;
-        self.fb_hp_y_prev = hp;
-        let lp = patches_dsp::flush_denormal(
-            self.fb_lp_y_prev + self.fb_lp_alpha * (hp - self.fb_lp_y_prev),
-        );
-        self.fb_lp_y_prev = lp;
-        lp
+        let hp = patches_dsp::flush_denormal(self.fb_hp.process(x));
+        patches_dsp::flush_denormal(self.fb_lp.process(hp))
     }
 
     /// Shared per-tap chain (vbbd mono and vstereobbd per side). Returns

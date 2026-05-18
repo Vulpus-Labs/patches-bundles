@@ -5,6 +5,7 @@ use patches_sdk::params_enum;
 use patches_dsp::noise::xorshift64;
 
 use crate::bbd::{Bbd, BbdDevice};
+use crate::primitives::{OnePoleLpf, TriangleLfo};
 
 params_enum! {
     pub enum Variant {
@@ -77,27 +78,6 @@ fn mode_table(variant: Variant, mode: Mode) -> ModeTable {
     }
 }
 
-/// One-pole lowpass used as the post-BBD reconstruction filter. Cheap
-/// mirror of the analog 3rd-order filter on the hardware; the audible
-/// part is the cutoff difference between `bright` and `dark`.
-#[derive(Default, Clone, Copy)]
-struct OnePoleLpf {
-    a: f32,
-    y: f32,
-}
-
-impl OnePoleLpf {
-    fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
-        let x = (-std::f32::consts::TAU * cutoff_hz / sample_rate).exp();
-        self.a = 1.0 - x;
-    }
-    #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        self.y += self.a * (x - self.y);
-        self.y
-    }
-}
-
 /// Pure-DSP core of the VChorus module. Owns the BBDs, reconstruction
 /// filters, LFO phase and hiss PRNG; no knowledge of ports or params.
 pub struct VChorusCore {
@@ -112,7 +92,7 @@ pub struct VChorusCore {
     lpf_l: OnePoleLpf,
     lpf_r: OnePoleLpf,
 
-    lfo_phase: f32,
+    lfo: TriangleLfo,
     noise_state: u64,
 
     /// `smoothing_interval - 1`; gates delay updates to the BBDs via
@@ -135,7 +115,7 @@ impl VChorusCore {
             bbd_r,
             lpf_l: OnePoleLpf::default(),
             lpf_r: OnePoleLpf::default(),
-            lfo_phase: 0.0,
+            lfo: TriangleLfo::new(),
             noise_state: noise_seed,
             mod_interval_mask,
             mod_counter: 0,
@@ -243,13 +223,8 @@ impl VChorusCore {
             (1.0 + depth_offset).clamp(0.0, 2.0)
         };
 
-        self.lfo_phase += rate_hz / self.sample_rate;
-        if self.lfo_phase >= 1.0 {
-            self.lfo_phase -= 1.0;
-        }
-        // Strict-triangle LFO in [-1, +1].
-        let tri = 4.0 * (self.lfo_phase - (self.lfo_phase + 0.5).floor()).abs() - 1.0;
-        let lfo = tri.clamp(-1.0, 1.0);
+        self.lfo.set_rate(rate_hz, self.sample_rate);
+        let lfo = self.lfo.tick();
 
         let depth = table.depth() * depth_scale;
         let center = table.center();

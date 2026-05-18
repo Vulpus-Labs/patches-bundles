@@ -3,14 +3,13 @@
 //! sweeps with the inverted LFO, producing a wide pseudo-stereo comb
 //! without losing mono compatibility.
 //!
-//! The flanger chain itself, the `OnePoleLpf` primitive, the constants
-//! (`DELAY_MIN_S/MAX_S`, `LF_BYPASS_HZ`, `FB_MAX`), and the triangle
-//! LFO tick all live in [`crate::vflanger::core`] — both flanger
-//! modules share that single source of truth.
+//! The flanger `Channel` chain and the per-module constants
+//! (`DELAY_MIN_S/MAX_S`, `LF_BYPASS_HZ`, `FB_MAX`) live in
+//! [`crate::vflanger::core`]; the triangle LFO and one-pole filters
+//! come from [`crate::primitives`].
 
-use crate::vflanger::core::{
-    tri_lfo_tick, Channel, DELAY_MAX_S, DELAY_MIN_S, FB_MAX,
-};
+use crate::primitives::TriangleLfo;
+use crate::vflanger::core::{Channel, DELAY_MAX_S, DELAY_MIN_S, FB_MAX};
 
 pub struct VFlangerStereoCore {
     sample_rate: f32,
@@ -18,7 +17,7 @@ pub struct VFlangerStereoCore {
     left: Channel,
     right: Channel,
 
-    lfo_phase: f32,
+    lfo: TriangleLfo,
 
     /// `smoothing_interval - 1` for both BBDs (same at a given SR).
     mod_interval_mask: u32,
@@ -40,7 +39,7 @@ impl VFlangerStereoCore {
             sample_rate,
             left,
             right: Channel::new(sample_rate),
-            lfo_phase: 0.0,
+            lfo: TriangleLfo::new(),
             mod_interval_mask,
             mod_counter: 0,
             rate_hz: 0.5,
@@ -102,7 +101,8 @@ impl VFlangerStereoCore {
         };
 
         let rate = (self.rate_hz * (1.0 + rate_offset.clamp(-1.0, 1.0))).max(0.01);
-        let tri = tri_lfo_tick(&mut self.lfo_phase, rate, self.sample_rate);
+        self.lfo.set_rate(rate, self.sample_rate);
+        let tri = self.lfo.tick();
 
         let depth = (self.depth + depth_offset).clamp(0.0, 1.0);
         let manual = (self.manual_s + manual_offset * 0.001).clamp(DELAY_MIN_S, DELAY_MAX_S);

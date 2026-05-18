@@ -20,6 +20,7 @@
 
 use crate::bbd::{Bbd, BbdDevice};
 use crate::compander::{CompanderParams, Compressor, Expander};
+use crate::primitives::{OnePoleLpf, TriangleLfo};
 
 /// BBD delay window in seconds. Matches a 1024-stage BBD clocked
 /// between roughly 200 kHz and 30 kHz — the range a BF-2-style
@@ -31,35 +32,6 @@ pub(crate) const LF_BYPASS_HZ: f32 = 150.0;
 /// Resonance is positive-only on the hardware but the model accepts
 /// signed values so a patch can invert the comb for a hollow tone.
 pub(crate) const FB_MAX: f32 = 0.93;
-
-#[derive(Default, Clone, Copy)]
-pub(crate) struct OnePoleLpf {
-    a: f32,
-    y: f32,
-}
-
-impl OnePoleLpf {
-    pub(crate) fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
-        let x = (-std::f32::consts::TAU * cutoff_hz / sample_rate).exp();
-        self.a = 1.0 - x;
-    }
-    #[inline]
-    pub(crate) fn process(&mut self, x: f32) -> f32 {
-        self.y += self.a * (x - self.y);
-        self.y
-    }
-}
-
-/// Triangle LFO tick. Advances `phase` by `rate_hz / sr`, wraps to
-/// `[0, 1)`, and returns the unipolar→bipolar triangle in `[-1, +1]`.
-#[inline]
-pub(crate) fn tri_lfo_tick(phase: &mut f32, rate_hz: f32, sample_rate: f32) -> f32 {
-    *phase += rate_hz / sample_rate;
-    if *phase >= 1.0 {
-        *phase -= 1.0;
-    }
-    4.0 * (*phase - (*phase + 0.5).floor()).abs() - 1.0
-}
 
 /// One flanger channel: HPF/LPF split → HF + feedback → compand → BBD
 /// → expand → reconstruction LPF → LF reinjection. The mono module
@@ -121,7 +93,7 @@ pub struct VFlangerCore {
 
     channel: Channel,
 
-    lfo_phase: f32,
+    lfo: TriangleLfo,
 
     /// `smoothing_interval - 1` for the BBD — a power-of-two mask
     /// lets us gate `set_delay_seconds` with a single AND.
@@ -143,7 +115,7 @@ impl VFlangerCore {
         Self {
             sample_rate,
             channel,
-            lfo_phase: 0.0,
+            lfo: TriangleLfo::new(),
             mod_interval_mask,
             mod_counter: 0,
             rate_hz: 0.5,
@@ -191,7 +163,8 @@ impl VFlangerCore {
         fb_offset: f32,
     ) -> f32 {
         let rate = (self.rate_hz * (1.0 + rate_offset.clamp(-1.0, 1.0))).max(0.01);
-        let tri = tri_lfo_tick(&mut self.lfo_phase, rate, self.sample_rate);
+        self.lfo.set_rate(rate, self.sample_rate);
+        let tri = self.lfo.tick();
 
         // Depth scales the sweep around the manual centre. The total
         // window is clamped to the BBD-usable range.

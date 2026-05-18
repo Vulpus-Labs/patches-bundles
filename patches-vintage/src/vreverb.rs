@@ -58,6 +58,7 @@ use patches_sdk::{StructuralParams, BuildError};
 use patches_dsp::approximate::fast_tanh;
 
 use crate::bbd::{Bbd, BbdDevice};
+use crate::primitives::OnePoleLpf;
 
 module_params! {
     VReverb {
@@ -127,8 +128,7 @@ fn damping_coeff(sr: f32, damping: f32) -> f32 {
     let hi = DAMP_FC_MAX_HZ.ln();
     // damping = 0 → max cutoff (bright), damping = 1 → min cutoff (dark)
     let fc = (hi + (lo - hi) * damping).exp();
-    let a = 1.0 - (-std::f32::consts::TAU * fc / sr).exp();
-    a.clamp(0.0, 1.0)
+    OnePoleLpf::alpha_for(fc, sr).clamp(0.0, 1.0)
 }
 
 /// Vintage BBD reverb. See the module-level documentation.
