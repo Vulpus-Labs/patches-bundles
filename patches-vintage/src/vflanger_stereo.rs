@@ -156,6 +156,11 @@ impl Module for VFlangerStereo {
 
     fn process(&mut self, pool: &mut CablePool<'_>) {
         let (l, r) = pool.read_stereo(&self.in_stereo);
+        // Reading the SDK's public `broadcast_from_mono` field directly
+        // (see `vchorus.rs` for the same pattern): a broadcast cable
+        // means "mono source on a stereo port" and we want the
+        // mono-safe inverse-LFO path, whereas a real stereo cable
+        // gets independent processing.
         let both =
             self.in_stereo.is_connected() && !self.in_stereo.broadcast_from_mono;
         let ro = pool.read_mono(&self.rate_cv);

@@ -126,6 +126,10 @@ impl Expander {
 }
 
 /// One-pole lowpass coefficient from a time constant (seconds).
+///
+/// `tau_s <= 0.0` returns `1.0` so the LP degenerates to a pass-through
+/// (no smoothing). Callers that want a finite zero-time response should
+/// rely on this rather than guarding upstream.
 #[inline]
 fn one_pole_coef(tau_s: f32, sample_rate: f32) -> f32 {
     if tau_s <= 0.0 {

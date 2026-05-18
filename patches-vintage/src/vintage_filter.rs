@@ -99,6 +99,12 @@ pub(crate) struct VintageVcfMonoCore<K: MonoVcfKernel> {
     in_cutoff_cv: MonoInput,
     in_global_drift: MonoInput,
     out_audio: MonoOutput,
+    /// `false` until `set_ports` runs. `set_params` skips the
+    /// `apply_static` call before this is set so we don't double-tap
+    /// `kernel.set_static` (once during the initial parameter snapshot
+    /// the framework pushes before wiring ports, and again during
+    /// `set_ports`).
+    ports_initialized: bool,
 }
 
 impl<K: MonoVcfKernel> VintageVcfMonoCore<K> {
@@ -129,6 +135,7 @@ impl<K: MonoVcfKernel> VintageVcfMonoCore<K> {
             in_cutoff_cv: MonoInput::default(),
             in_global_drift,
             out_audio: MonoOutput::default(),
+            ports_initialized: false,
         }
     }
 
@@ -152,7 +159,10 @@ impl<K: MonoVcfKernel> VintageVcfMonoCore<K> {
         self.drive = drive;
         self.drift_amount = drift_amount;
         self.kernel.on_voicing_changed(voicing);
-        if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
+        if self.ports_initialized
+            && !self.in_cutoff_cv.is_connected()
+            && self.drift_amount == 0.0
+        {
             self.apply_static_now();
         }
     }
@@ -161,6 +171,7 @@ impl<K: MonoVcfKernel> VintageVcfMonoCore<K> {
         self.in_audio = MonoInput::from_ports(inputs, 0);
         self.in_cutoff_cv = MonoInput::from_ports(inputs, 1);
         self.out_audio = MonoOutput::from_ports(outputs, 0);
+        self.ports_initialized = true;
         if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
             self.apply_static_now();
         }
@@ -348,6 +359,8 @@ pub(crate) struct VintageVcfPolyCore<K: PolyVcfKernel> {
     in_cutoff_cv: PolyInput,
     in_global_drift: MonoInput,
     out_audio: PolyOutput,
+    /// See `VintageVcfMonoCore::ports_initialized`.
+    ports_initialized: bool,
 }
 
 impl<K: PolyVcfKernel> VintageVcfPolyCore<K> {
@@ -378,6 +391,7 @@ impl<K: PolyVcfKernel> VintageVcfPolyCore<K> {
             in_cutoff_cv: PolyInput::default(),
             in_global_drift,
             out_audio: PolyOutput::default(),
+            ports_initialized: false,
         }
     }
 
@@ -401,7 +415,10 @@ impl<K: PolyVcfKernel> VintageVcfPolyCore<K> {
         self.drive = drive;
         self.drift_amount = drift_amount;
         self.kernel.on_voicing_changed(voicing);
-        if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
+        if self.ports_initialized
+            && !self.in_cutoff_cv.is_connected()
+            && self.drift_amount == 0.0
+        {
             self.apply_static_now();
         }
     }
@@ -410,6 +427,7 @@ impl<K: PolyVcfKernel> VintageVcfPolyCore<K> {
         self.in_audio = PolyInput::from_ports(inputs, 0);
         self.in_cutoff_cv = PolyInput::from_ports(inputs, 1);
         self.out_audio = PolyOutput::from_ports(outputs, 0);
+        self.ports_initialized = true;
         if !self.in_cutoff_cv.is_connected() && self.drift_amount == 0.0 {
             self.apply_static_now();
         }

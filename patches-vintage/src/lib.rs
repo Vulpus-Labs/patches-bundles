@@ -111,22 +111,39 @@ mod ffi_bundle_tests {
         assert_eq!(manifest.abi_version, ABI_VERSION);
         assert_eq!(manifest.count, EXPECTED_NAMES.len());
 
-        // SAFETY: pointer comes from a process-static slice produced by the
-        // macro; it is valid for the lifetime of the program.
+        // Defensive: a null `vtables` slice would be a macro regression
+        // that's worse to deref than to fail the test loudly.
+        assert!(
+            !manifest.vtables.is_null(),
+            "manifest vtables pointer is null — macro regression"
+        );
+
+        // SAFETY: pointer comes from a process-static slice produced by
+        // the macro and we just verified it is non-null; it is valid
+        // for the lifetime of the program.
         let vtables =
             unsafe { std::slice::from_raw_parts(manifest.vtables, manifest.count) };
 
         for (vtable, expected_name) in vtables.iter().zip(EXPECTED_NAMES) {
             assert_eq!(vtable.abi_version, ABI_VERSION, "abi drift in {expected_name}");
-            // SAFETY: FFI fn ptr is an extern "C" entry point emitted by the
-            // macro; module_template is safe to call.
+            // SAFETY: FFI fn ptr is an extern "C" entry point emitted by
+            // the macro; `module_template` is safe to call.
             let bytes = unsafe { (vtable.module_template)() };
-            let template = patches_sdk::json::deserialize_module_descriptor_template(
-                unsafe { bytes.as_slice() },
-            )
-            .expect("module_template returned invalid JSON");
+            // SAFETY: `bytes` is a freshly-emitted FfiBytes; we read
+            // its slice once for the empty-check, then again to
+            // deserialize.
+            let slice = unsafe { bytes.as_slice() };
+            // Defensive: an empty `bytes` would silently deserialize as
+            // EOF; fail explicitly so a missing macro arm shows up here.
+            assert!(
+                !slice.is_empty(),
+                "module_template returned empty bytes for {expected_name}"
+            );
+            let template = patches_sdk::json::deserialize_module_descriptor_template(slice)
+                .expect("module_template returned invalid JSON");
             assert_eq!(&template.name, expected_name);
-            // SAFETY: free_bytes matches FfiBytes::from_vec that produced `bytes`.
+            // SAFETY: free_bytes matches FfiBytes::from_vec that
+            // produced `bytes`.
             unsafe { (vtable.free_bytes)(bytes) };
         }
     }

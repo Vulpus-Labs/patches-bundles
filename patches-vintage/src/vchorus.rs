@@ -156,9 +156,12 @@ impl Module for VChorus {
 
     fn process(&mut self, pool: &mut CablePool<'_>) {
         let (l_in, r_in) = pool.read_stereo(&self.in_stereo);
-        // The Juno-106 mono-compatibility trick depends on whether the two
-        // halves carry distinct material. Mono-source broadcast signals this
-        // explicitly; otherwise treat any connected stereo cable as "stereo".
+        // The Juno-106 mono-compatibility trick depends on whether the
+        // two halves carry distinct material. We read the SDK's
+        // `broadcast_from_mono` field directly (the SDK exposes it as
+        // public state on `StereoInput`); a true broadcast is "mono
+        // arriving on a stereo port", while a real stereo cable
+        // carries two channels and we want the wider chorus.
         let both_connected =
             self.in_stereo.is_connected() && !self.in_stereo.broadcast_from_mono;
         let rate_offset = pool.read_mono(&self.rate_cv);

@@ -34,7 +34,7 @@ pub struct VFlangerStereoCore {
 impl VFlangerStereoCore {
     pub fn new(sample_rate: f32) -> Self {
         let left = Channel::new(sample_rate);
-        let mod_interval_mask = left.smoothing_interval() - 1;
+        let mod_interval_mask = left.smoothing_interval_mask();
         Self {
             sample_rate,
             left,

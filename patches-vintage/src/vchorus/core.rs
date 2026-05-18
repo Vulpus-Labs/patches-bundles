@@ -108,7 +108,12 @@ impl VChorusCore {
     pub fn new(sample_rate: f32, noise_seed: u64) -> Self {
         let bbd_l = Bbd::new(&BbdDevice::BBD_256, sample_rate);
         let bbd_r = Bbd::new(&BbdDevice::BBD_256, sample_rate);
-        let mod_interval_mask = bbd_l.smoothing_interval() - 1;
+        let interval = bbd_l.smoothing_interval();
+        debug_assert!(
+            interval.is_power_of_two(),
+            "BBD smoothing_interval must be a power of two (got {interval})"
+        );
+        let mod_interval_mask = interval - 1;
         let mut me = Self {
             sample_rate,
             variant: Variant::Bright,

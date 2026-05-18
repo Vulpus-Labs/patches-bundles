@@ -64,8 +64,16 @@ impl Channel {
         &mut self.bbd
     }
 
-    pub(crate) fn smoothing_interval(&self) -> u32 {
-        self.bbd.smoothing_interval()
+    /// `smoothing_interval - 1`, asserted to be a power-of-two mask in
+    /// debug builds. Used by the flanger cores to gate
+    /// `set_delay_seconds` with a single AND.
+    pub(crate) fn smoothing_interval_mask(&self) -> u32 {
+        let interval = self.bbd.smoothing_interval();
+        debug_assert!(
+            interval.is_power_of_two(),
+            "BBD smoothing_interval must be a power of two (got {interval})"
+        );
+        interval - 1
     }
 
     #[inline]
@@ -111,7 +119,7 @@ pub struct VFlangerCore {
 impl VFlangerCore {
     pub fn new(sample_rate: f32) -> Self {
         let channel = Channel::new(sample_rate);
-        let mod_interval_mask = channel.smoothing_interval() - 1;
+        let mod_interval_mask = channel.smoothing_interval_mask();
         Self {
             sample_rate,
             channel,

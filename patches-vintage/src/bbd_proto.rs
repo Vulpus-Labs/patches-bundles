@@ -248,6 +248,12 @@ impl BbdProto {
     /// clock sees the clean ramped `bbd_ts`.
     pub fn set_jitter_amount(&mut self, amount: f32) {
         let new_amount = amount.clamp(0.0, 1.0);
+        // Strict `== 0.0` is intentional: hot-path code skips the
+        // jitter block entirely when `jitter_amount == 0.0` to stay
+        // bit-identical with a non-jittered build; anything other
+        // than literal zero engages the jitter path and pays its
+        // floating-point cost, so the "did the caller disable jitter?"
+        // realignment only fires on a clean zero crossing.
         if new_amount == 0.0 && self.jitter_amount > 0.0 && self.has_delay_set {
             // Realign the clock to the un-jittered `bbd_ts_cur` so the
             // tail of this session doesn't run at a permanently skewed

@@ -96,10 +96,10 @@ impl BbdClock {
     /// this sample, call `on_tick`. Sub-sample time `tau` is relative
     /// to the start of the current host sample and lies in `[0, 1)`.
     pub fn step<F: FnMut(Tick)>(&mut self, mut on_tick: F) {
-        // Largest f32 strictly below 1.0 (= `1.0f32.next_down()`).
+        // Largest f32 strictly below 1.0.
         // `tn · inv_host_ts` can round up to exactly 1.0 even when
         // `tn < host_ts`; pin τ below 1 so `Tick::tau ∈ [0, 1)` holds.
-        const MAX_TAU: f32 = f32::from_bits(0x3F7F_FFFF);
+        const MAX_TAU: f32 = 1.0_f32.next_down();
         while self.tn < self.host_ts {
             let tau = (self.tn * self.inv_host_ts).min(MAX_TAU);
             let tick = Tick {

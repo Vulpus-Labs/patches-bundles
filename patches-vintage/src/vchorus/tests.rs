@@ -99,6 +99,11 @@ fn hiss_silent_at_zero_and_bounded_at_one() {
         h2.tick();
         peak = peak.max(h2.read_stereo("out").0.abs());
     }
+    // 0.02 ≈ −34 dBFS — the program-dependent hiss floor at silence
+    // sits well below the audible noise floor, comfortably under the
+    // BBD's bucket-saturation threshold, and a few dB above the
+    // 16-bit DAC LSB (~−96 dBFS) so the test isn't quantisation-noise
+    // sensitive.
     assert!(
         peak > 0.0 && peak < 0.02,
         "hiss peak {peak} out of expected range [0, 0.02]"
