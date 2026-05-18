@@ -53,7 +53,7 @@ use patches_sdk::{
 };
 use patches_sdk::{StructuralParams, BuildError};
 
-mod core;
+pub(crate) mod core;
 
 #[cfg(test)]
 mod tests;
@@ -126,11 +126,8 @@ impl Module for VFlanger {
             descriptor,
             core: {
                 let mut c = VFlangerCore::new(env.sample_rate);
-                // Per-module seed salt — keep distinct from sibling BBD-based
-                // modules so two instances with the same `instance_id`
-                // (different modules) decorrelate their jitter streams.
-                //   0x0001 vbbd, 0x0010 vchorus, 0x0020 vstereobbd,
-                //   0x0030 vflanger_stereo, 0x0040 vreverb, 0x0050 vflanger.
+                // Per-module seed salt. Full registry lives in
+                // `vflanger::core` module docstring.
                 c.set_jitter_seed((instance_id.as_u64() ^ 0xBBD0_0050) as u32);
                 c
             },

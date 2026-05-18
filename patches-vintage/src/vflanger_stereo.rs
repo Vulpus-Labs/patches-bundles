@@ -113,6 +113,8 @@ impl Module for VFlangerStereo {
             descriptor,
             core: {
                 let mut c = VFlangerStereoCore::new(env.sample_rate);
+                // Per-module seed salt. Full registry lives in
+                // `vflanger::core` module docstring.
                 c.set_jitter_seed_base((instance_id.as_u64() ^ 0xBBD0_0030) as u32);
                 c
             },

@@ -2,79 +2,21 @@
 //! independent BBD chains share one triangle LFO; the right channel
 //! sweeps with the inverted LFO, producing a wide pseudo-stereo comb
 //! without losing mono compatibility.
+//!
+//! The flanger chain itself, the `OnePoleLpf` primitive, the constants
+//! (`DELAY_MIN_S/MAX_S`, `LF_BYPASS_HZ`, `FB_MAX`), and the triangle
+//! LFO tick all live in [`crate::vflanger::core`] — both flanger
+//! modules share that single source of truth.
 
-use crate::bbd::{Bbd, BbdDevice};
-use crate::compander::{CompanderParams, Compressor, Expander};
-
-const DELAY_MIN_S: f32 = 0.0003;
-const DELAY_MAX_S: f32 = 0.010;
-const LF_BYPASS_HZ: f32 = 150.0;
-const FB_MAX: f32 = 0.93;
-
-#[derive(Default, Clone, Copy)]
-struct OnePoleLpf {
-    a: f32,
-    y: f32,
-}
-
-impl OnePoleLpf {
-    fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
-        let x = (-std::f32::consts::TAU * cutoff_hz / sample_rate).exp();
-        self.a = 1.0 - x;
-    }
-    #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        self.y += self.a * (x - self.y);
-        self.y
-    }
-}
-
-/// One complete flanger chain: BBD + compander + reconstruction LPF +
-/// feedback state. The module owns one of these per channel.
-struct Chain {
-    bbd: Bbd,
-    comp: Compressor,
-    exp: Expander,
-    recon: OnePoleLpf,
-    lf_split: OnePoleLpf,
-    fb_state: f32,
-}
-
-impl Chain {
-    fn new(sr: f32) -> Self {
-        let mut c = Self {
-            bbd: Bbd::new(&BbdDevice::BBD_1024, sr),
-            comp: Compressor::new(CompanderParams::NE570_DEFAULT, sr),
-            exp: Expander::new(CompanderParams::NE570_DEFAULT, sr),
-            recon: OnePoleLpf::default(),
-            lf_split: OnePoleLpf::default(),
-            fb_state: 0.0,
-        };
-        c.recon.set_cutoff(8_000.0, sr);
-        c.lf_split.set_cutoff(LF_BYPASS_HZ, sr);
-        c
-    }
-
-    #[inline]
-    fn process(&mut self, x: f32, fb: f32, mix: f32, lf_bypass: bool) -> f32 {
-        let lf = self.lf_split.process(x);
-        let hf = x - lf;
-        let drive = hf + fb * self.fb_state;
-        let compressed = self.comp.process(drive);
-        let bbd_out = self.bbd.process(compressed);
-        let expanded = self.exp.process(bbd_out);
-        let wet = self.recon.process(expanded);
-        self.fb_state = patches_dsp::flush_denormal(wet);
-        let dry_lf = if lf_bypass { lf } else { 0.0 };
-        dry_lf + (1.0 - mix) * hf + mix * wet
-    }
-}
+use crate::vflanger::core::{
+    tri_lfo_tick, Channel, DELAY_MAX_S, DELAY_MIN_S, FB_MAX,
+};
 
 pub struct VFlangerStereoCore {
     sample_rate: f32,
 
-    left: Chain,
-    right: Chain,
+    left: Channel,
+    right: Channel,
 
     lfo_phase: f32,
 
@@ -92,12 +34,12 @@ pub struct VFlangerStereoCore {
 
 impl VFlangerStereoCore {
     pub fn new(sample_rate: f32) -> Self {
-        let left = Chain::new(sample_rate);
-        let mod_interval_mask = left.bbd.smoothing_interval() - 1;
+        let left = Channel::new(sample_rate);
+        let mod_interval_mask = left.smoothing_interval() - 1;
         Self {
             sample_rate,
             left,
-            right: Chain::new(sample_rate),
+            right: Channel::new(sample_rate),
             lfo_phase: 0.0,
             mod_interval_mask,
             mod_counter: 0,
@@ -130,13 +72,13 @@ impl VFlangerStereoCore {
     }
 
     pub fn set_jitter(&mut self, amount: f32) {
-        self.left.bbd.set_jitter_amount(amount);
-        self.right.bbd.set_jitter_amount(amount);
+        self.left.bbd_mut().set_jitter_amount(amount);
+        self.right.bbd_mut().set_jitter_amount(amount);
     }
 
     pub fn set_jitter_seed_base(&mut self, base: u32) {
-        self.left.bbd.set_jitter_seed(base);
-        self.right.bbd.set_jitter_seed(base.wrapping_add(1));
+        self.left.bbd_mut().set_jitter_seed(base);
+        self.right.bbd_mut().set_jitter_seed(base.wrapping_add(1));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -159,13 +101,8 @@ impl VFlangerStereoCore {
             l_in + r_in
         };
 
-        // ── LFO ─────────────────────────────────────────────────────
         let rate = (self.rate_hz * (1.0 + rate_offset.clamp(-1.0, 1.0))).max(0.01);
-        self.lfo_phase += rate / self.sample_rate;
-        if self.lfo_phase >= 1.0 {
-            self.lfo_phase -= 1.0;
-        }
-        let tri = 4.0 * (self.lfo_phase - (self.lfo_phase + 0.5).floor()).abs() - 1.0;
+        let tri = tri_lfo_tick(&mut self.lfo_phase, rate, self.sample_rate);
 
         let depth = (self.depth + depth_offset).clamp(0.0, 1.0);
         let manual = (self.manual_s + manual_offset * 0.001).clamp(DELAY_MIN_S, DELAY_MAX_S);
@@ -176,8 +113,8 @@ impl VFlangerStereoCore {
         let fb = (self.feedback + fb_offset).clamp(-FB_MAX, FB_MAX);
 
         if self.mod_counter & self.mod_interval_mask == 0 {
-            self.left.bbd.set_delay_seconds(delay_l);
-            self.right.bbd.set_delay_seconds(delay_r);
+            self.left.bbd_mut().set_delay_seconds(delay_l);
+            self.right.bbd_mut().set_delay_seconds(delay_r);
         }
         self.mod_counter = self.mod_counter.wrapping_add(1);
 

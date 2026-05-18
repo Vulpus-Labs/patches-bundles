@@ -1,11 +1,22 @@
-//! Pure DSP core for [`VFlanger`](super::VFlanger). No ports, no
-//! parameter map. Testable standalone.
+//! Pure DSP core for [`VFlanger`](super::VFlanger) and the building
+//! blocks shared with [`vflanger_stereo`](crate::vflanger_stereo).
 //!
 //! Models the Boss BF-2B signal flow: input splits into a low-frequency
 //! bypass (preserved flat) and a high-frequency band that is fed through
 //! a companded BBD delay modulated by a triangle LFO. Wet output is
 //! summed with the dry HF band (~50/50, the characteristic flanger
 //! comb) and the untouched LF band.
+//!
+//! `Channel` owns one BBD chain (compander + BBD + reconstruction LPF +
+//! LF/HF split + feedback state). `VFlanger` holds a single `Channel`;
+//! `VFlangerStereo` holds two, sharing this same chain definition.
+//!
+//! Per-module seed salt registry (XORed with `instance_id` so two
+//! instances of *different* modules with the same id stay
+//! decorrelated):
+//!   `0xBBD0_0001` vbbd, `0xBBD0_0010` vchorus, `0xBBD0_0020` vstereobbd,
+//!   `0xBBD0_0030` vflanger_stereo, `0xBBD0_0040` vreverb,
+//!   `0xBBD0_0050` vflanger.
 
 use crate::bbd::{Bbd, BbdDevice};
 use crate::compander::{CompanderParams, Compressor, Expander};
@@ -13,52 +24,110 @@ use crate::compander::{CompanderParams, Compressor, Expander};
 /// BBD delay window in seconds. Matches a 1024-stage BBD clocked
 /// between roughly 200 kHz and 30 kHz — the range a BF-2-style
 /// flanger covers.
-const DELAY_MIN_S: f32 = 0.0003;
-const DELAY_MAX_S: f32 = 0.010;
+pub(crate) const DELAY_MIN_S: f32 = 0.0003;
+pub(crate) const DELAY_MAX_S: f32 = 0.010;
 /// LF/HF crossover cutoff when the BF-2B-style bass bypass is enabled.
-const LF_BYPASS_HZ: f32 = 150.0;
+pub(crate) const LF_BYPASS_HZ: f32 = 150.0;
 /// Resonance is positive-only on the hardware but the model accepts
 /// signed values so a patch can invert the comb for a hollow tone.
-const FB_MAX: f32 = 0.93;
+pub(crate) const FB_MAX: f32 = 0.93;
 
 #[derive(Default, Clone, Copy)]
-struct OnePoleLpf {
+pub(crate) struct OnePoleLpf {
     a: f32,
     y: f32,
 }
 
 impl OnePoleLpf {
-    fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
+    pub(crate) fn set_cutoff(&mut self, cutoff_hz: f32, sample_rate: f32) {
         let x = (-std::f32::consts::TAU * cutoff_hz / sample_rate).exp();
         self.a = 1.0 - x;
     }
     #[inline]
-    fn process(&mut self, x: f32) -> f32 {
+    pub(crate) fn process(&mut self, x: f32) -> f32 {
         self.y += self.a * (x - self.y);
         self.y
+    }
+}
+
+/// Triangle LFO tick. Advances `phase` by `rate_hz / sr`, wraps to
+/// `[0, 1)`, and returns the unipolar→bipolar triangle in `[-1, +1]`.
+#[inline]
+pub(crate) fn tri_lfo_tick(phase: &mut f32, rate_hz: f32, sample_rate: f32) -> f32 {
+    *phase += rate_hz / sample_rate;
+    if *phase >= 1.0 {
+        *phase -= 1.0;
+    }
+    4.0 * (*phase - (*phase + 0.5).floor()).abs() - 1.0
+}
+
+/// One flanger channel: HPF/LPF split → HF + feedback → compand → BBD
+/// → expand → reconstruction LPF → LF reinjection. The mono module
+/// owns one of these; the stereo module owns two.
+pub(crate) struct Channel {
+    bbd: Bbd,
+    comp: Compressor,
+    exp: Expander,
+    recon: OnePoleLpf,
+    lf_split: OnePoleLpf,
+    fb_state: f32,
+}
+
+impl Channel {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        let mut c = Self {
+            bbd: Bbd::new(&BbdDevice::BBD_1024, sample_rate),
+            comp: Compressor::new(CompanderParams::NE570_DEFAULT, sample_rate),
+            exp: Expander::new(CompanderParams::NE570_DEFAULT, sample_rate),
+            recon: OnePoleLpf::default(),
+            lf_split: OnePoleLpf::default(),
+            fb_state: 0.0,
+        };
+        c.recon.set_cutoff(8_000.0, sample_rate);
+        c.lf_split.set_cutoff(LF_BYPASS_HZ, sample_rate);
+        c
+    }
+
+    pub(crate) fn bbd_mut(&mut self) -> &mut Bbd {
+        &mut self.bbd
+    }
+
+    pub(crate) fn smoothing_interval(&self) -> u32 {
+        self.bbd.smoothing_interval()
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, x: f32, fb: f32, mix: f32, lf_bypass: bool) -> f32 {
+        // HPF is always applied to the BBD path — matches the ~100 Hz
+        // input HPF on a real BF-2 and keeps low-note comb notches out
+        // of the effect. Dry LF is reinjected only when `lf_bypass` is
+        // on (BF-2B behaviour); otherwise it is simply rolled off, as
+        // on the plain BF-2.
+        let lf = self.lf_split.process(x);
+        let hf = x - lf;
+        let drive = hf + fb * self.fb_state;
+        let compressed = self.comp.process(drive);
+        let bbd_out = self.bbd.process(compressed);
+        let expanded = self.exp.process(bbd_out);
+        let wet = self.recon.process(expanded);
+        self.fb_state = patches_dsp::flush_denormal(wet);
+        let dry_lf = if lf_bypass { lf } else { 0.0 };
+        dry_lf + (1.0 - mix) * hf + mix * wet
     }
 }
 
 pub struct VFlangerCore {
     sample_rate: f32,
 
-    bbd: Bbd,
-    comp: Compressor,
-    exp: Expander,
-    recon_lpf: OnePoleLpf,
-    lf_split: OnePoleLpf,
+    channel: Channel,
 
     lfo_phase: f32,
-
-    // Last wet sample — carried for the feedback path.
-    fb_state: f32,
 
     /// `smoothing_interval - 1` for the BBD — a power-of-two mask
     /// lets us gate `set_delay_seconds` with a single AND.
     mod_interval_mask: u32,
     mod_counter: u32,
 
-    // Parameters.
     rate_hz: f32,
     depth: f32,
     manual_s: f32,
@@ -69,17 +138,12 @@ pub struct VFlangerCore {
 
 impl VFlangerCore {
     pub fn new(sample_rate: f32) -> Self {
-        let bbd = Bbd::new(&BbdDevice::BBD_1024, sample_rate);
-        let mod_interval_mask = bbd.smoothing_interval() - 1;
-        let mut me = Self {
+        let channel = Channel::new(sample_rate);
+        let mod_interval_mask = channel.smoothing_interval() - 1;
+        Self {
             sample_rate,
-            bbd,
-            comp: Compressor::new(CompanderParams::NE570_DEFAULT, sample_rate),
-            exp: Expander::new(CompanderParams::NE570_DEFAULT, sample_rate),
-            recon_lpf: OnePoleLpf::default(),
-            lf_split: OnePoleLpf::default(),
+            channel,
             lfo_phase: 0.0,
-            fb_state: 0.0,
             mod_interval_mask,
             mod_counter: 0,
             rate_hz: 0.5,
@@ -88,10 +152,7 @@ impl VFlangerCore {
             feedback: 0.0,
             mix: 0.5,
             lf_bypass: true,
-        };
-        me.recon_lpf.set_cutoff(8_000.0, sample_rate);
-        me.lf_split.set_cutoff(LF_BYPASS_HZ, sample_rate);
-        me
+        }
     }
 
     pub fn set_rate(&mut self, r: f32) {
@@ -114,11 +175,11 @@ impl VFlangerCore {
     }
 
     pub fn set_jitter(&mut self, amount: f32) {
-        self.bbd.set_jitter_amount(amount);
+        self.channel.bbd_mut().set_jitter_amount(amount);
     }
 
     pub fn set_jitter_seed(&mut self, seed: u32) {
-        self.bbd.set_jitter_seed(seed);
+        self.channel.bbd_mut().set_jitter_seed(seed);
     }
 
     pub fn process(
@@ -129,13 +190,8 @@ impl VFlangerCore {
         manual_offset: f32,
         fb_offset: f32,
     ) -> f32 {
-        // ── LFO (triangle in [-1, +1]) ──────────────────────────────
         let rate = (self.rate_hz * (1.0 + rate_offset.clamp(-1.0, 1.0))).max(0.01);
-        self.lfo_phase += rate / self.sample_rate;
-        if self.lfo_phase >= 1.0 {
-            self.lfo_phase -= 1.0;
-        }
-        let tri = 4.0 * (self.lfo_phase - (self.lfo_phase + 0.5).floor()).abs() - 1.0;
+        let tri = tri_lfo_tick(&mut self.lfo_phase, rate, self.sample_rate);
 
         // Depth scales the sweep around the manual centre. The total
         // window is clamped to the BBD-usable range.
@@ -144,30 +200,11 @@ impl VFlangerCore {
         let span = 0.5 * (DELAY_MAX_S - DELAY_MIN_S) * depth;
         let delay = (manual + span * tri).clamp(DELAY_MIN_S, DELAY_MAX_S);
         if self.mod_counter & self.mod_interval_mask == 0 {
-            self.bbd.set_delay_seconds(delay);
+            self.channel.bbd_mut().set_delay_seconds(delay);
         }
         self.mod_counter = self.mod_counter.wrapping_add(1);
 
-        // ── LF/HF split ─────────────────────────────────────────────
-        // HPF is always applied to the BBD path — matches the ~100 Hz
-        // input HPF on a real BF-2 and keeps low-note comb notches out
-        // of the effect. Dry LF is reinjected only when `lf_bypass` is
-        // on (BF-2B behaviour); otherwise it is simply rolled off, as
-        // on the plain BF-2.
-        let lf = self.lf_split.process(x);
-        let hf = x - lf;
-
-        // ── Flanger core: HF + feedback → comp → BBD → exp → LPF ────
         let fb = (self.feedback + fb_offset).clamp(-FB_MAX, FB_MAX);
-        let drive = hf + fb * self.fb_state;
-        let comp = self.comp.process(drive);
-        let bbd_out = self.bbd.process(comp);
-        let expanded = self.exp.process(bbd_out);
-        let wet = self.recon_lpf.process(expanded);
-
-        self.fb_state = patches_dsp::flush_denormal(wet);
-
-        let dry_lf = if self.lf_bypass { lf } else { 0.0 };
-        dry_lf + (1.0 - self.mix) * hf + self.mix * wet
+        self.channel.process(x, fb, self.mix, self.lf_bypass)
     }
 }
