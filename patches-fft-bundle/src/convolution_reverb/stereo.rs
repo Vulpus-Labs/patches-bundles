@@ -1,5 +1,7 @@
 //! Stereo convolution reverb module.
 
+use std::sync::Arc;
+
 use patches_sdk::build_error::BuildError;
 use patches_sdk::cable_pool::CablePool;
 use patches_sdk::parameter_map::ParameterMap;
@@ -13,9 +15,12 @@ use patches_sdk::{StructuralParams};
 
 use patches_fft_harness::partitioned_convolution::NonUniformConvolver;
 
-use super::params::{BLOCK_SIZE, IR_FILE_EXTENSIONS, IrVariant, MAX_TIER_BLOCK_SIZE};
+use super::params::{
+    self, BLOCK_SIZE, IR_FILE_EXTENSIONS, IrVariant, MAX_TIER_BLOCK_SIZE, SharedParams,
+};
 use super::core::params as core_params;
-use super::ConvReverbCore;
+use super::processor::{build_processor, ProcessorKit};
+use super::{read_ir_variant, ConvReverbCore};
 
 /// Stereo convolution reverb -- two independent convolvers (L/R) sharing
 /// parameters. Stereo impulse files use left/right channels directly; mono
@@ -33,10 +38,9 @@ pub struct StereoConvReverb {
     pub(super) out_stereo: StereoOutput,
 
     pub(super) core: ConvReverbCore,
-    /// Pre-decoded IR loaded from the `ir_path` structural param (if any).
-    pub(super) pre_fft_ir: Option<Vec<f32>>,
 }
 
+// SAFETY: see ConvolutionReverb (super).
 unsafe impl Send for StereoConvReverb {}
 
 impl patches_sdk::Module for StereoConvReverb {
@@ -56,12 +60,12 @@ impl patches_sdk::Module for StereoConvReverb {
                     name: core_params::mix.as_str(),
                     kind: ParameterKind::Float { min: 0.0, max: 1.0, default: 1.0 },
                 },
+            ],
+            structural_params: &[
                 ParameterTemplate {
                     name: core_params::ir.as_str(),
                     kind: ParameterKind::Enum { variants: IrVariant::VARIANTS, default: "room" },
                 },
-            ],
-            structural_params: &[
                 ParameterTemplate {
                     name: "ir_path",
                     kind: ParameterKind::File { extensions: IR_FILE_EXTENSIONS },
@@ -79,42 +83,55 @@ impl patches_sdk::Module for StereoConvReverb {
         instance_id: InstanceId,
         structural: &StructuralParams,
     ) -> Result<Self, BuildError> {
-        let pre_fft_ir = match structural.get_string("ir_path", 0) {
-            Some(p) if !p.is_empty() => {
-                let (left, right) = patches_io::read_stereo(
-                    std::path::Path::new(p),
-                    audio_environment.sample_rate as f64,
+        let sample_rate = audio_environment.sample_rate;
+        let variant = read_ir_variant(structural);
+        let ir_path = structural.get_string("ir_path", 0).filter(|p| !p.is_empty());
+
+        let ir_pair: Option<(Vec<f32>, Vec<f32>)> = match (variant, ir_path) {
+            (IrVariant::File, Some(path)) => Some(
+                patches_io::read_stereo(
+                    std::path::Path::new(path),
+                    sample_rate as f64,
                 )
                 .map_err(|e| BuildError::Custom {
                     module: "StereoConvReverb",
-                    message: format!("failed to load '{p}': {e}"),
+                    message: format!("failed to load '{path}': {e}"),
                     origin: None,
-                })?;
-                let left_pre =
-                    NonUniformConvolver::serialize_pre_fft(&left, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE);
-                let right_pre =
-                    NonUniformConvolver::serialize_pre_fft(&right, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE);
-                let mut packed = Vec::with_capacity(1 + left_pre.len() + right_pre.len());
-                packed.push(left_pre.len() as f32);
-                packed.extend_from_slice(&left_pre);
-                packed.extend_from_slice(&right_pre);
-                Some(packed)
-            }
-            _ => None,
+                })?,
+            ),
+            (IrVariant::File, None) => None,
+            (v, _) => Some(params::generate_stereo_variant_ir(v, sample_rate)
+                .expect("non-File variant always synthesises an IR pair")),
         };
+
+        let shared = Arc::new(SharedParams::new());
+        let kits: Vec<Option<ProcessorKit>> = match ir_pair {
+            Some((ir_l, ir_r)) => {
+                let conv_l = NonUniformConvolver::new(&ir_l, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE);
+                let conv_r = NonUniformConvolver::new(&ir_r, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE);
+                vec![
+                    Some(build_processor(conv_l, Arc::clone(&shared), "patches-conv-reverb-l")),
+                    Some(build_processor(conv_r, Arc::clone(&shared), "patches-conv-reverb-r")),
+                ]
+            }
+            None => vec![None, None],
+        };
+
         Ok(Self {
             instance_id,
             descriptor,
             in_stereo: StereoInput::default(),
             in_mix: MonoInput::default(),
             out_stereo: StereoOutput::default(),
-            core: ConvReverbCore::new(true, audio_environment.sample_rate),
-            pre_fft_ir,
+            core: ConvReverbCore::from_kits(kits, shared, 1.0),
         })
     }
 
     fn apply_unpacked_params(&mut self, params: &ParameterMap) -> Result<(), BuildError> {
-        self.core.update_parameters(params, "StereoConvReverb", self.pre_fft_ir.take())
+        if let Some(patches_sdk::parameter_map::ParameterValue::Float(v)) = params.get("mix", 0) {
+            self.core.set_base_mix(*v);
+        }
+        Ok(())
     }
 
     fn update_validated_parameters(&mut self, params: &ParamView<'_>) {
@@ -138,18 +155,13 @@ impl patches_sdk::Module for StereoConvReverb {
     fn process(&mut self, pool: &mut CablePool<'_>) {
         let (input_l, input_r) = pool.read_stereo(&self.in_stereo);
 
-        let out_l = if let Some(ref mut ol) = self.core.overlap_buffers[0] {
-            ol.write(input_l);
-            ol.read()
-        } else {
-            input_l
+        let out_l = match &mut self.core.kits[0] {
+            Some(kit) => { kit.overlap_buffer.write(input_l); kit.overlap_buffer.read() }
+            None => input_l,
         };
-
-        let out_r = if let Some(ref mut or) = self.core.overlap_buffers[1] {
-            or.write(input_r);
-            or.read()
-        } else {
-            input_r
+        let out_r = match &mut self.core.kits[1] {
+            Some(kit) => { kit.overlap_buffer.write(input_r); kit.overlap_buffer.read() }
+            None => input_r,
         };
 
         pool.write_stereo(&self.out_stereo, out_l, out_r);
@@ -161,12 +173,9 @@ impl patches_sdk::Module for StereoConvReverb {
     fn wants_periodic(&self) -> bool { true }
 
     fn periodic_update(&mut self, pool: &CablePool<'_>) {
-        self.core.poll_loader();
-
         if self.in_mix.is_connected() {
             let mix_cv = pool.read_mono(&self.in_mix);
             self.core.update_shared_mix(mix_cv);
         }
     }
 }
-

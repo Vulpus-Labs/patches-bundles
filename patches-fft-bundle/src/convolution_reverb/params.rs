@@ -46,13 +46,7 @@ patches_sdk::params_enum! {
     }
 }
 
-/// IR variant names (snake_case) in descriptor/declaration order.
-pub(super) const IR_VARIANTS: &[&str] = IrVariant::VARIANTS;
-
-/// Index of the "file" variant in [`IR_VARIANTS`].
-pub(super) const FILE_VARIANT_IDX: u8 = IrVariant::File as u8;
-
-/// File extensions supported by the convolution reverb's `ir_data` parameter.
+/// File extensions supported by the convolution reverb's `ir_path` parameter.
 pub(super) const IR_FILE_EXTENSIONS: &[&str] = &["wav", "aiff", "aif"];
 
 // ---------------------------------------------------------------------------
@@ -102,32 +96,48 @@ pub(super) fn generate_ir(
     ir
 }
 
-// Variant parameters: (duration_secs, seed_l, seed_r, lowpass_l, lowpass_r, ramp_rate)
-const ROOM_PARAMS:  (f32, u64, u64, f32, f32, f32) = (0.4, 12345, 54321, 0.0,  0.0,  0.0);
-const HALL_PARAMS:  (f32, u64, u64, f32, f32, f32) = (1.5, 67890, 9876,  0.15, 0.13, 0.0);
-const PLATE_PARAMS: (f32, u64, u64, f32, f32, f32) = (2.0, 24680, 13579, 0.0,  0.0,  200.0);
+/// Tunable parameters for a synthetic IR variant.
+struct VariantParams {
+    duration_secs: f32,
+    seed_l: u64,
+    seed_r: u64,
+    lowpass_l: f32,
+    lowpass_r: f32,
+    ramp_rate: f32,
+}
 
-fn variant_params(name: &str) -> (f32, u64, u64, f32, f32, f32) {
-    match name {
-        "room"  => ROOM_PARAMS,
-        "hall"  => HALL_PARAMS,
-        "plate" => PLATE_PARAMS,
-        _       => ROOM_PARAMS,
+const ROOM_PARAMS:  VariantParams = VariantParams { duration_secs: 0.4, seed_l: 12345, seed_r: 54321, lowpass_l: 0.0,  lowpass_r: 0.0,  ramp_rate: 0.0   };
+const HALL_PARAMS:  VariantParams = VariantParams { duration_secs: 1.5, seed_l: 67890, seed_r: 9876,  lowpass_l: 0.15, lowpass_r: 0.13, ramp_rate: 0.0   };
+const PLATE_PARAMS: VariantParams = VariantParams { duration_secs: 2.0, seed_l: 24680, seed_r: 13579, lowpass_l: 0.0,  lowpass_r: 0.0,  ramp_rate: 200.0 };
+
+/// Tunable parameters for each synthetic variant. `File` falls through to
+/// the caller (no synthetic generation).
+fn variant_params(variant: IrVariant) -> Option<&'static VariantParams> {
+    match variant {
+        IrVariant::Room  => Some(&ROOM_PARAMS),
+        IrVariant::Hall  => Some(&HALL_PARAMS),
+        IrVariant::Plate => Some(&PLATE_PARAMS),
+        IrVariant::File  => None,
     }
 }
 
-/// Generate a synthetic mono IR for the given variant name.
-pub(super) fn generate_variant_ir(variant: &str, sample_rate: f32) -> Vec<f32> {
-    let (dur, seed_l, _, lp_l, _, ramp) = variant_params(variant);
-    generate_ir(sample_rate, dur, seed_l, lp_l, ramp)
+/// Generate a synthetic mono IR for the given variant. Returns `None` for
+/// `IrVariant::File` (the caller resolves it from `ir_path`).
+pub(super) fn generate_variant_ir(variant: IrVariant, sample_rate: f32) -> Option<Vec<f32>> {
+    let p = variant_params(variant)?;
+    Some(generate_ir(sample_rate, p.duration_secs, p.seed_l, p.lowpass_l, p.ramp_rate))
 }
 
-/// Generate a synthetic stereo IR pair for the given variant name.
-pub(super) fn generate_stereo_variant_ir(variant: &str, sample_rate: f32) -> (Vec<f32>, Vec<f32>) {
-    let (dur, seed_l, seed_r, lp_l, lp_r, ramp) = variant_params(variant);
-    (
-        generate_ir(sample_rate, dur, seed_l, lp_l, ramp),
-        generate_ir(sample_rate, dur, seed_r, lp_r, ramp),
-    )
+/// Generate a synthetic stereo IR pair for the given variant. Returns `None`
+/// for `IrVariant::File`.
+pub(super) fn generate_stereo_variant_ir(
+    variant: IrVariant,
+    sample_rate: f32,
+) -> Option<(Vec<f32>, Vec<f32>)> {
+    let p = variant_params(variant)?;
+    Some((
+        generate_ir(sample_rate, p.duration_secs, p.seed_l, p.lowpass_l, p.ramp_rate),
+        generate_ir(sample_rate, p.duration_secs, p.seed_r, p.lowpass_r, p.ramp_rate),
+    ))
 }
 

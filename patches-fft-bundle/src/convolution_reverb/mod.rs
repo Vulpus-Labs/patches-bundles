@@ -34,19 +34,20 @@
 //!
 //! | Name | Type | Range | Default | Description |
 //! |------|------|-------|---------|-------------|
-//! | `mix` | float | 0.0--1.0 | `1.0` | Dry/wet mix |
-//! | `ir` | enum | room/hall/plate/file | `room` | Impulse response variant |
+//! | `mix` | float | 0.0--1.0 | `1.0` | Dry/wet mix (realtime) |
+//! | `ir` | structural enum | room/hall/plate/file | `room` | Impulse response variant |
 //! | `ir_path` | structural str | -- | `""` | File path for `ir: file` variant |
 //!
 //! # Real-time safety
 //!
-//! IR resolution (file I/O, synthetic generation), convolver construction, and
-//! processing thread management all happen off the audio thread. On initial
-//! build these run synchronously on the control thread (via `Module::prepare`
-//! and `apply_unpacked_params`). For parameter updates to surviving modules
-//! ([`update_validated_parameters`]), an [`ir_loader::IrLoader`] background
-//! thread handles the heavy work. The audio thread only stashes a request
-//! and polls for results in [`periodic_update`].
+//! IR resolution (file I/O, synthetic generation), convolver construction,
+//! and processing-thread spawn all happen on the control thread inside
+//! [`Module::prepare`]. Both `ir` and `ir_path` are structural (ADR 0060),
+//! so any change rebuilds the module via the planner — there is no
+//! audio-thread reload path. The audio thread only reads/writes overlap
+//! buffers and updates the `mix` atomic.
+
+use std::sync::Arc;
 
 use patches_sdk::build_error::BuildError;
 use patches_sdk::cable_pool::CablePool;
@@ -62,15 +63,30 @@ use patches_sdk::{StructuralParams};
 use patches_fft_harness::partitioned_convolution::NonUniformConvolver;
 
 mod core;
-mod ir_loader;
 mod params;
+mod processor;
 mod stereo;
 
 pub use stereo::StereoConvReverb;
 
 use core::ConvReverbCore;
 use core::params as core_params;
-use params::{BLOCK_SIZE, IR_FILE_EXTENSIONS, IrVariant, MAX_TIER_BLOCK_SIZE};
+use params::{BLOCK_SIZE, IR_FILE_EXTENSIONS, IrVariant, MAX_TIER_BLOCK_SIZE, SharedParams};
+use processor::build_processor;
+
+// ---------------------------------------------------------------------------
+// Shared structural-param resolution
+// ---------------------------------------------------------------------------
+
+/// Read the `ir` structural enum out of a `StructuralParams` blob. Falls
+/// back to the descriptor default (`Room`) on missing or out-of-range.
+pub(super) fn read_ir_variant(structural: &StructuralParams) -> IrVariant {
+    structural
+        .get_int("ir", 0)
+        .and_then(|i| u32::try_from(i).ok())
+        .and_then(|i| IrVariant::try_from(i).ok())
+        .unwrap_or(IrVariant::Room)
+}
 
 // ---------------------------------------------------------------------------
 // Module: ConvolutionReverb (Mono)
@@ -89,24 +105,23 @@ pub struct ConvolutionReverb {
     out_audio: MonoOutput,
 
     core: ConvReverbCore,
-    /// Pre-decoded IR loaded from the `ir_path` structural param (if any).
-    /// `apply_unpacked_params` consumes this on first call to install the
-    /// convolver synchronously.
-    pre_fft_ir: Option<Vec<f32>>,
     /// Sticky witness: `true` iff `prepare` decoded a non-empty IR from the
-    /// `ir_path` structural param. Survives `apply_unpacked_params` so
+    /// `ir_path` structural param. Survives the lifetime of the module so
     /// integration tests can assert the structural pipeline reached
     /// `Module::prepare` (ADR 0060, ticket 0746).
     prepared_with_ir_path: bool,
 }
 
-// SAFETY: see ConvReverbCore.
+// SAFETY: ConvolutionReverb is constructed on the control thread and sent
+// once to the audio thread (via Module: Send), where it remains for its
+// lifetime. `OverlapBuffer` (inside `ProcessorKit`) is `!Send` as a lint
+// against casual cross-thread use; single ownership transfer at plan
+// activation is safe.
 unsafe impl Send for ConvolutionReverb {}
 
 impl ConvolutionReverb {
     /// Test/observation hook (ADR 0060): `true` when `prepare` decoded a
-    /// non-empty IR from the `ir_path` structural param. Sticky — set once
-    /// at `prepare` time, survives `apply_unpacked_params`.
+    /// non-empty IR from the `ir_path` structural param.
     pub fn prepared_with_ir_path(&self) -> bool {
         self.prepared_with_ir_path
     }
@@ -129,12 +144,12 @@ impl patches_sdk::Module for ConvolutionReverb {
                     name: core_params::mix.as_str(),
                     kind: ParameterKind::Float { min: 0.0, max: 1.0, default: 1.0 },
                 },
+            ],
+            structural_params: &[
                 ParameterTemplate {
                     name: core_params::ir.as_str(),
                     kind: ParameterKind::Enum { variants: IrVariant::VARIANTS, default: "room" },
                 },
-            ],
-            structural_params: &[
                 ParameterTemplate {
                     name: "ir_path",
                     kind: ParameterKind::File { extensions: IR_FILE_EXTENSIONS },
@@ -152,38 +167,50 @@ impl patches_sdk::Module for ConvolutionReverb {
         instance_id: InstanceId,
         structural: &StructuralParams,
     ) -> Result<Self, BuildError> {
-        let pre_fft_ir = match structural.get_string("ir_path", 0) {
-            Some(p) if !p.is_empty() => {
-                let samples = patches_io::read_mono(
-                    std::path::Path::new(p),
-                    audio_environment.sample_rate as f64,
+        let sample_rate = audio_environment.sample_rate;
+        let variant = read_ir_variant(structural);
+        let ir_path = structural.get_string("ir_path", 0).filter(|p| !p.is_empty());
+        let prepared_with_ir_path = ir_path.is_some();
+
+        let ir_samples: Option<Vec<f32>> = match (variant, ir_path) {
+            (IrVariant::File, Some(path)) => Some(
+                patches_io::read_mono(
+                    std::path::Path::new(path),
+                    sample_rate as f64,
                 )
                 .map_err(|e| BuildError::Custom {
                     module: "ConvReverb",
-                    message: format!("failed to load '{p}': {e}"),
+                    message: format!("failed to load '{path}': {e}"),
                     origin: None,
-                })?;
-                Some(NonUniformConvolver::serialize_pre_fft(
-                    &samples, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE,
-                ))
-            }
-            _ => None,
+                })?,
+            ),
+            (IrVariant::File, None) => None,
+            (v, _) => Some(params::generate_variant_ir(v, sample_rate)
+                .expect("non-File variant always synthesises an IR")),
         };
-        let prepared_with_ir_path = pre_fft_ir.as_ref().is_some_and(|v| !v.is_empty());
+
+        let shared = Arc::new(SharedParams::new());
+        let kit = ir_samples.map(|ir| {
+            let convolver = NonUniformConvolver::new(&ir, BLOCK_SIZE, MAX_TIER_BLOCK_SIZE);
+            build_processor(convolver, Arc::clone(&shared), "patches-conv-reverb")
+        });
+
         Ok(Self {
             instance_id,
             descriptor,
             in_audio: MonoInput::default(),
             in_mix: MonoInput::default(),
             out_audio: MonoOutput::default(),
-            core: ConvReverbCore::new(false, audio_environment.sample_rate),
-            pre_fft_ir,
+            core: ConvReverbCore::from_kits(vec![kit], shared, 1.0),
             prepared_with_ir_path,
         })
     }
 
     fn apply_unpacked_params(&mut self, params: &ParameterMap) -> Result<(), BuildError> {
-        self.core.update_parameters(params, "ConvReverb", self.pre_fft_ir.take())
+        if let Some(patches_sdk::parameter_map::ParameterValue::Float(v)) = params.get("mix", 0) {
+            self.core.set_base_mix(*v);
+        }
+        Ok(())
     }
 
     fn update_validated_parameters(&mut self, params: &ParamView<'_>) {
@@ -206,14 +233,14 @@ impl patches_sdk::Module for ConvolutionReverb {
 
     fn process(&mut self, pool: &mut CablePool<'_>) {
         let input = pool.read_mono(&self.in_audio);
-        if let Some(ref mut overlap_buffer) = self.core.overlap_buffers[0] {
-            overlap_buffer.write(input);
-            let output = overlap_buffer.read();
-            pool.write_mono(&self.out_audio, output);
-        } else {
-            // Passthrough if processor not yet started.
-            pool.write_mono(&self.out_audio, input);
-        }
+        let output = match &mut self.core.kits[0] {
+            Some(kit) => {
+                kit.overlap_buffer.write(input);
+                kit.overlap_buffer.read()
+            }
+            None => input,
+        };
+        pool.write_mono(&self.out_audio, output);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -222,8 +249,6 @@ impl patches_sdk::Module for ConvolutionReverb {
     fn wants_periodic(&self) -> bool { true }
 
     fn periodic_update(&mut self, pool: &CablePool<'_>) {
-        self.core.poll_loader();
-
         if self.in_mix.is_connected() {
             let mix_cv = pool.read_mono(&self.in_mix);
             self.core.update_shared_mix(mix_cv);

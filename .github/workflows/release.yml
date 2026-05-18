@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string for installer (no leading v). Defaults to 0.0.0-dev.'
+        required: false
+        default: ''
+
+jobs:
+  build-macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build x86_64
+        run: cargo build --release --workspace --exclude xtask --target x86_64-apple-darwin
+
+      - name: Build aarch64
+        run: cargo build --release --workspace --exclude xtask --target aarch64-apple-darwin
+
+      - name: Lipo into universal .pxm
+        run: |
+          set -euo pipefail
+          mkdir -p release/plugins
+          for lib in libpatches_vintage libpatches_drums libpatches_fft_bundle; do
+            base="${lib#lib}"
+            lipo -create \
+              "target/x86_64-apple-darwin/release/${lib}.dylib" \
+              "target/aarch64-apple-darwin/release/${lib}.dylib" \
+              -output "release/plugins/${base}.pxm"
+            lipo -info "release/plugins/${base}.pxm"
+          done
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            v="${{ inputs.version }}"
+          else
+            v="0.0.0-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Zip plugins
+        run: |
+          cd release
+          zip -r "../patches-bundles-${{ steps.ver.outputs.version }}-macos-universal.zip" plugins
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: patches-bundles-*-macos-universal.zip
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows x64 installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build + stage .pxm files
+        run: cargo xtask package
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $v = $env:GITHUB_REF_NAME -replace '^v',''
+          } elseif ('${{ inputs.version }}' -ne '') {
+            $v = '${{ inputs.version }}'
+          } else {
+            $v = '0.0.0-dev'
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Compile Inno Setup installer
+        shell: pwsh
+        run: |
+          iscc /DAppVersion=${{ steps.ver.outputs.version }} installer\windows\patches-bundles.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: installer/windows/Output/*.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [build-macos, build-windows]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show artifacts
+        run: find artifacts -type f -printf '%p (%s bytes)\n'
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/macos/*
+            artifacts/windows/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

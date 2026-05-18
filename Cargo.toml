@@ -6,6 +6,14 @@ members = [
     "patches-drums",
     "patches-fft-harness",
     "patches-fft-bundle",
+    "xtask",
+]
+default-members = [
+    "patches-io",
+    "patches-vintage",
+    "patches-drums",
+    "patches-fft-harness",
+    "patches-fft-bundle",
 ]
 
 [workspace.package]
@@ -19,6 +27,6 @@ publish = false
 [workspace.dependencies]
 patches-core = "0.7"
 patches-sdk = "0.7"
-patches-dsp = { git = "https://github.com/Vulpus-Labs/patches.git", tag = "v0.7.2" }
+patches-dsp = "0.6"
 patches-io = { path = "patches-io" }
 rtrb = "0.3"
