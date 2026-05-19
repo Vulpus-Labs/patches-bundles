@@ -214,18 +214,18 @@ patch {
     tom_drum.out -> tom_drive.in
 
     # ── Mixer: 8 channels panned across the stereo field ─────────────────
-    module mix: StereoMixer(8) {
-        @0: { level: 0.85, pan: 0.0 },
-        @1: { level: 0.75, pan: -0.1 },
-        @2: { level: 0.55, pan: 0.3 },
-        @3: { level: 0.55, pan: -0.3 },
-        @4: { level: 0.65, pan: 0.15, send_a: 0.2 },
-        @5: { level: 0.7,  pan: -0.25 },
-        @6: { level: 0.4,  pan: 0.45, send_a: 0.3 },
-        @7: { level: 0.5,  pan: 0.0,  send_a: 0.15 }
+    module mix: Console([kick, snare, ch, oh, clap, tom, claves, cymbal]) {
+        @kick { level: 0.85, pan: 0.0 },
+        @snare { level: 0.75, pan: -0.1 },
+        @ch { level: 0.55, pan: 0.3 },
+        @oh { level: 0.55, pan: -0.3 },
+        @clap { level: 0.65, pan: 0.15, send_a: 0.2 },
+        @tom { level: 0.7,  pan: -0.25 },
+        @claves { level: 0.4,  pan: 0.45, send_a: 0.3 },
+        @cymbal { level: 0.5,  pan: 0.0,  send_a: 0.15 }
     }
 
-    kick_trans.out  -> mix.in[0]
+    kick_trans.out  -[0.8]-> mix.in[0]
     snare_trans.out -> mix.in[1]
     hat_crush.out   -> mix.in[2]
     open_hat.out    -> mix.in[3]
@@ -234,7 +234,7 @@ patch {
     claves_drum.out -> mix.in[6]
     cymbal_drum.out -> mix.in[7]
 
-    kick_trans.out -> ~spectrum+osc+meter(kick)
+    kick_trans.out -[0.8]-> ~spectrum+osc+meter(kick)
     snare_trans.out -> ~spectrum(snare)
     cymbal_drum.out -> ~spectrum(cymbal)
 
@@ -255,7 +255,10 @@ patch {
     module lim: StereoLimiter { threshold: 0.8 }
 
     mix.out    -> reverb.in
-    reverb.out -> lim.in
+
+    module gate : Gatez { threshold:  }
+    reverb.out -> gate.in
+    gate.out -> lim.in
 
     # Stereo meter on the master bus (ADR 0059 §7): the manifest
     # publishes `master/left` + `master/right` at consecutive slots; the

@@ -3,11 +3,20 @@
 /// Simpler than `AdsrCore` for drum sounds that only need attack-decay behaviour.
 /// When `triggered` is true the level resets to 1.0 and decays exponentially
 /// toward zero. The caller is responsible for edge detection (via `TriggerInput`).
+///
+/// The exponential multiply asymptotes to zero but never reaches it. `tick`
+/// snaps `level` to exactly `0.0` once it drops below
+/// [`SILENCE_THRESHOLD`] (≈ −140 dBFS), so downstream voices can early-out
+/// on [`Self::is_silent`] and skip their entire process body. Snap is
+/// monotone-decreasing — existing decay tests are unaffected.
 pub struct DecayEnvelope {
     level: f32,
     decay_coeff: f32,
     sample_rate: f32,
 }
+
+/// Level below which the envelope snaps to zero (−140 dBFS, inaudible).
+const SILENCE_THRESHOLD: f32 = 1.0e-7;
 
 impl DecayEnvelope {
     pub fn new(sample_rate: f32) -> Self {
@@ -42,9 +51,20 @@ impl DecayEnvelope {
             self.level = 1.0;
         } else {
             self.level *= self.decay_coeff;
+            if self.level < SILENCE_THRESHOLD {
+                self.level = 0.0;
+            }
         }
 
         self.level
+    }
+
+    /// `true` when [`Self::tick`] has snapped to exactly `0.0`. Voices use
+    /// this to skip their per-sample work when the envelope has decayed
+    /// past audibility.
+    #[inline]
+    pub fn is_silent(&self) -> bool {
+        self.level == 0.0
     }
 
     /// Immediately silence the envelope (used for hi-hat choke).
@@ -108,6 +128,24 @@ mod tests {
         // Retrigger should reset to 1.0
         let v = env.tick(true);
         assert_within!(1.0, v, 1e-6);
+    }
+
+    #[test]
+    fn decay_envelope_snaps_to_zero_below_threshold() {
+        let mut env = DecayEnvelope::new(SR);
+        env.set_decay(0.05);
+        env.tick(true);
+        // Run far past the −140 dBFS threshold. Analytical level
+        // reaches 1e-7 around 0.05 × log10(1e-7) / log10(0.001) ≈ 5×
+        // decay-time = 0.25 s ≈ 11k samples; 30k is comfortably past.
+        for _ in 0..30_000 {
+            env.tick(false);
+        }
+        assert!(env.is_silent());
+        // The snap is exact: subsequent ticks return exactly 0.0.
+        for _ in 0..100 {
+            assert_eq!(env.tick(false), 0.0);
+        }
     }
 
     #[test]

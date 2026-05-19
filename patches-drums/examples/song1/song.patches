@@ -79,7 +79,7 @@ patch {
     drums_split.out_left  -> mix.in[drum_l]
     drums_split.out_right -> mix.in[drum_r]
 
-    module mix : StereoMixer([drum_l, drum_r, bass]) {
+    module mix : Console([drum_l, drum_r, bass]) {
         @drum_l { pan: -1, send_a: 0.3 }
         @drum_r { pan: 1, send_a: 0.3 }
         @bass { pan: 0, send_a: 0.3, level: 0.4 }

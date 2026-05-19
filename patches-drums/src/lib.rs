@@ -18,11 +18,15 @@ pub mod kick2;
 pub mod snare;
 pub mod clap_drum;
 pub mod hihat;
+pub mod hihat2;
+pub mod xor_hihat;
 pub mod tom;
 pub mod tom2;
 pub mod claves;
 pub mod claves2;
 pub mod cymbal;
+pub mod cymbal2;
+pub mod xor_cymbal;
 
 #[cfg(test)]
 mod test_support;
@@ -32,11 +36,15 @@ pub use kick2::Kick2;
 pub use snare::Snare;
 pub use clap_drum::ClapDrum;
 pub use hihat::{ClosedHiHat, OpenHiHat};
+pub use hihat2::{ClosedHiHat2, OpenHiHat2};
+pub use xor_hihat::{XorClosedHiHat, XorOpenHiHat};
 pub use tom::Tom;
 pub use tom2::Tom2;
 pub use claves::Claves;
 pub use claves2::Claves2;
 pub use cymbal::Cymbal;
+pub use cymbal2::Cymbal2;
+pub use xor_cymbal::XorCymbal;
 
 /// Register every module in this crate with the supplied registry.
 ///
@@ -51,11 +59,17 @@ pub fn register(r: &mut patches_sdk::registry::Registry) {
     r.register::<ClapDrum>();
     r.register::<ClosedHiHat>();
     r.register::<OpenHiHat>();
+    r.register::<ClosedHiHat2>();
+    r.register::<OpenHiHat2>();
     r.register::<Tom>();
     r.register::<Tom2>();
     r.register::<Claves>();
     r.register::<Claves2>();
     r.register::<Cymbal>();
+    r.register::<Cymbal2>();
+    r.register::<XorCymbal>();
+    r.register::<XorClosedHiHat>();
+    r.register::<XorOpenHiHat>();
 }
 
 // ── FFI bundle export ────────────────────────────────────────────────────────
@@ -70,11 +84,17 @@ patches_sdk::export_modules! {
     (ffi_clap_drum,    ClapDrum,     "Clap",         1),
     (ffi_closed_hihat, ClosedHiHat,  "ClosedHiHat",  1),
     (ffi_open_hihat,   OpenHiHat,    "OpenHiHat",    1),
+    (ffi_closed_hihat2, ClosedHiHat2, "ClosedHiHat2", 1),
+    (ffi_open_hihat2,  OpenHiHat2,   "OpenHiHat2",   1),
     (ffi_tom,          Tom,          "Tom",          1),
     (ffi_tom2,         Tom2,         "Tom2",         1),
     (ffi_claves,       Claves,       "Claves",       1),
     (ffi_claves2,      Claves2,      "Claves2",      1),
     (ffi_cymbal,       Cymbal,       "Cymbal",       1),
+    (ffi_cymbal2,      Cymbal2,      "Cymbal2",      1),
+    (ffi_xor_cymbal,   XorCymbal,    "XorCymbal",    1),
+    (ffi_xor_closed_hihat, XorClosedHiHat, "XorClosedHiHat", 1),
+    (ffi_xor_open_hihat,   XorOpenHiHat,   "XorOpenHiHat",   1),
 }
 
 #[cfg(test)]
@@ -93,11 +113,17 @@ mod ffi_bundle_tests {
         "Clap",
         "ClosedHiHat",
         "OpenHiHat",
+        "ClosedHiHat2",
+        "OpenHiHat2",
         "Tom",
         "Tom2",
         "Claves",
         "Claves2",
         "Cymbal",
+        "Cymbal2",
+        "XorCymbal",
+        "XorClosedHiHat",
+        "XorOpenHiHat",
     ];
 
     #[test]

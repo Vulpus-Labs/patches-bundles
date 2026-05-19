@@ -1,6 +1,7 @@
 # Drum machine demo (struck-resonator variant): swaps kick/tom/claves
-# for the ADR 0002 Kick2/Tom2/Claves2 family.
-# Kick2, snare, closed hat, open hat, clap, Tom2, Claves2, cymbal.
+# for the ADR 0002 Kick2/Tom2/Claves2 family, and hats/cymbal for the
+# E003 modal-bank ClosedHiHat2/OpenHiHat2/Cymbal2 voices.
+# Kick2, snare, ClosedHiHat2, OpenHiHat2, clap, Tom2, Claves2, Cymbal2.
 # Drive, bitcrusher, and transient shaping on individual voices.
 
 # ── Patterns ──────────────────────────────────────────────────────────────
@@ -135,14 +136,14 @@ patch {
     snare_pp.trigger[hit] -> snare_drum.trigger, ~trigger_led(snare_t)
     snare_pp.cv2[hit]     -> snare_drum.velocity
 
-    module closed_hat: ClosedHiHat {
-        pitch: 420, decay: 0.035, tone: 0.6, filter: 9000
+    module closed_hat: ClosedHiHat2 {
+        pitch: 420, decay: 0.035, decay_slope: 0.7, tone: 0.6, filter: 9000, pulse_ms: 0.4
     }
     hat_pp.trigger[hit] -> closed_hat.trigger, ~trigger_led(closed_hat)
     hat_pp.cv2[hit]     -> closed_hat.velocity
 
-    module open_hat: OpenHiHat {
-        pitch: 420, decay: 0.45, tone: 0.55, filter: 8000
+    module open_hat: OpenHiHat2 {
+        pitch: 420, decay: 0.45, decay_slope: 0.5, tone: 0.55, filter: 8000, pulse_ms: 0.5
     }
     ohat_pp.trigger[hit] -> open_hat.trigger
     # Closed hat chokes the open hat
@@ -167,9 +168,7 @@ patch {
     claves_pp.trigger[hit] -> claves_drum.trigger
     claves_pp.cv2[hit]     -> claves_drum.velocity
 
-    module cymbal_drum: Cymbal {
-        pitch: 550, decay: 3.0, tone: 0.5, filter: 5500, shimmer: 0.25
-    }
+    module cymbal_drum: XorCymbal
     cymbal_pp.trigger[hit] -> cymbal_drum.trigger
     cymbal_pp.cv2[hit]     -> cymbal_drum.velocity
 
@@ -187,13 +186,30 @@ patch {
 
     # Snare: fold distortion for edge, transient shaper to tighten
     module snare_drive: Drive {
-        mode: fold, drive: 2.5, tone: 0.6, bias: 0.0, mix: 0.5
+        mode: crush, drive: 20.0, tone: 0.6, bias: 0.0, mix: 0.5
     }
     module snare_trans: TransientShaper {
-        attack: 0.4, sustain: -0.3, speed: 8.0, mix: 0.7
+        attack: 0.3, sustain: -0.3, speed: 8.0, mix: 0.7
     }
     snare_drum.out -> snare_drive.in
     snare_drive.out -> snare_trans.in
+
+    # Snare: classic 80s gated reverb — bright plate, short hold, snap-off
+    # release on the wet signal only (gate keys on the reverb's own level).
+    module snare_verb: FdnReverb {
+        size: 0.65, brightness: 0.7, mix: 1.0, character: plate, pre_delay: 0.9
+    }
+    module snare_gate: StereoGate {
+        threshold: -12, hysteresis: 4, attack: 1, hold: 90, release: 30
+    }
+    module snare_verb_split: StereoSplitter
+    module snare_sum: Sum(2)
+
+    snare_trans.out           -> snare_verb.in
+    snare_verb.out            -> snare_gate.in
+    snare_gate.out            -> snare_verb_split.in
+    snare_trans.out           -> snare_sum.in[0]
+    snare_verb_split.out_left -[0.5]-> snare_sum.in[1]
 
     # Closed hat: bitcrusher for lo-fi texture
     module hat_crush: Bitcrusher {
@@ -214,9 +230,9 @@ patch {
     tom_drum.out -> tom_drive.in
 
     # ── Mixer: 8 channels panned across the stereo field ─────────────────
-    module mix: StereoMixer(8) {
+    module mix: Console(8) {
         @0: { level: 0.85, pan: 0.0 },
-        @1: { level: 0.75, pan: -0.1 },
+        @1: { level: 0.75, pan: -0.1, solo: false },
         @2: { level: 0.55, pan: 0.3 },
         @3: { level: 0.55, pan: -0.3 },
         @4: { level: 0.65, pan: 0.15, send_a: 0.2 },
@@ -225,18 +241,14 @@ patch {
         @7: { level: 0.5,  pan: 0.0,  send_a: 0.15 }
     }
 
-    kick_trans.out  -> mix.in[0]
-    snare_trans.out -> mix.in[1]
+    kick_trans.out  -[0.8]-> mix.in[0], ~spectrum+osc+meter(kick)
+    snare_sum.out -> mix.in[1], ~spectrum(snare)
     hat_crush.out   -> mix.in[2]
     open_hat.out    -> mix.in[3]
     clap_drive.out  -> mix.in[4]
     tom_drive.out   -> mix.in[5]
     claves_drum.out -> mix.in[6]
-    cymbal_drum.out -> mix.in[7]
-
-    kick_trans.out -> ~spectrum+osc+meter(kick)
-    snare_trans.out -> ~spectrum(snare)
-    cymbal_drum.out -> ~spectrum(cymbal)
+    cymbal_drum.out -> mix.in[7], ~spectrum(cymbal)
 
     # ── FX: stereo delay on send A (clap + claves + cymbal) ──────────────
     module delay: StereoDelay(2) {
@@ -252,10 +264,15 @@ patch {
     module reverb: FdnReverb {
         size: 0.3, brightness: 0.5, mix: 0.15, character: plate
     }
-    module lim: StereoLimiter { threshold: 0.8 }
+    module lim: StereoLimiter { threshold: 0.9 }
 
     mix.out    -> reverb.in
-    reverb.out -> lim.in
+    module gate : StereoGate { threshold: -20 }
+    reverb.out -> gate.in
+
+    stereo module krusher : Bitcrusher { depth: 16, rate: 0.9, dry_wet: 1.0 }
+    gate.out -> krusher.in
+    krusher.out -> lim.in
 
     # Stereo meter on the master bus (ADR 0059 §7): the manifest
     # publishes `master/left` + `master/right` at consecutive slots; the

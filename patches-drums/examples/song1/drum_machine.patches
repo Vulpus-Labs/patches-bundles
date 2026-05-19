@@ -38,7 +38,7 @@ template drum_machine(crush_rate: float = 0.8, crush_depth: float = 6.0, crush_m
     $.claves -> claves_drum.trigger
     $.cymbal -> cymbal_drum.trigger
 
-    module mix: StereoMixer([kick, snare, hat, ohat, clap, tom, claves, cymbal]) {
+    module mix: Console([kick, snare, hat, ohat, clap, tom, claves, cymbal]) {
         @kick { level: 0.85, pan: 0.0 },
         @snare { level: 0.75, pan: -0.1 },
         @hat { level: 0.55, pan: 0.3, send_a: 0.3 },

@@ -25,6 +25,8 @@
 
 use std::f32::consts::PI;
 
+use patches_dsp::approximate::fast_tan_small;
+
 /// Minimum classical Q the filter will accept. The implicit-equation
 /// denominator `1 + g(g + 1/Q)` stays bounded as long as `Q` does not
 /// collapse the `k = 1/Q` term to infinity, so we clamp `Q ≥ 0.5`
@@ -37,7 +39,7 @@ const Q_MIN: f32 = 0.5;
 const G_MAX: f32 = 0.4;
 
 pub(crate) struct TptSvf {
-    sample_rate: f32,
+    pi_over_sr: f32,
     g: f32,
     k: f32,
     a1: f32,
@@ -50,7 +52,7 @@ pub(crate) struct TptSvf {
 impl TptSvf {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let mut s = Self {
-            sample_rate,
+            pi_over_sr: PI / sample_rate,
             g: 0.0,
             k: 1.0,
             a1: 1.0,
@@ -66,7 +68,7 @@ impl TptSvf {
     pub(crate) fn set_f_q(&mut self, fc_hz: f32, q: f32) {
         let q = q.max(Q_MIN);
         let fc = fc_hz.max(1.0);
-        let g = (PI * fc / self.sample_rate).tan().min(G_MAX);
+        let g = fast_tan_small(fc * self.pi_over_sr, G_MAX);
         let k = 1.0 / q;
         let a1 = 1.0 / (1.0 + g * (g + k));
         self.g = g;

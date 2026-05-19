@@ -27,6 +27,6 @@ publish = false
 [workspace.dependencies]
 patches-core = "0.7"
 patches-sdk = "0.7"
-patches-dsp = "0.6"
+patches-dsp = "0.6.1"
 patches-io = { path = "patches-io" }
 rtrb = "0.3"

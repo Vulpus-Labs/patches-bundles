@@ -8,6 +8,15 @@ per Mutable Instruments Plaits's `AnalogBassDrum`) rather than emergent
 from a feedback saturator. See §"Linear core" and §"Nonlinearity and
 pitch droop" below.
 
+Amended 2026-05-19 — self-FM (the half-wave-rectified `lp` →
+cutoff-offset mechanism) did **not** deliver audible pitch droop in
+practice. Attack-FM does work and is the trigger-locked pitch-lift
+mechanism going forward. The `drive` parameter is retained on the API
+but now controls primarily the output saturator amount, not pitch
+motion. See §"Nonlinearity and pitch droop — 2026-05-19 update"
+below. Future struck-resonator voices (e.g. a forthcoming `Snare2`)
+should not claim droop unless attack-FM gets them there.
+
 ## Context
 
 The drums bundle today follows one architectural pattern for the
@@ -153,6 +162,61 @@ For `Tom2` this is the source of the amplitude-driven glide familiar
 from the analog tom voices — same self-FM mechanism, larger default
 `drive`. `Claves2` does not use FM; its character comes from the
 cascade described below.
+
+#### Nonlinearity and pitch droop — 2026-05-19 update
+
+Implementation against the design above landed and was tested
+empirically. **Attack-FM works as intended**; the brief trigger-locked
+pulse on `f` produces an audible lift on strike that settles back to
+`ω₀`, giving Kick2 its "thump → tone" character. `pitch_droop_with_attack_fm`
+in [kick2.rs:331](../src/kick2.rs#L331) verifies this and matches what
+the ear hears.
+
+**Self-FM does not.** The half-wave-rectified `lp` → cutoff-offset
+mechanism produces a measurable but inaudible pitch shift. The
+existing `pitch_droop_with_self_fm` test in
+[kick2.rs:346](../src/kick2.rs#L346) passes only because its
+acceptance threshold (`early > late + 10 Hz` over a 1024-sample early
+window where one FFT bin is ≈ 43 Hz at 44.1 kHz) clears at a
+sub-perceptible offset. By ear, `drive` does not move pitch; cranking
+it past 1.0 to compensate hits the cutoff `CONSTRAIN` clamp and
+produces zipper / saturation artefacts before the FM offset becomes
+audible.
+
+Root cause: rectified `lp` magnitude at non-distorting drive amounts
+is too small a fraction of `ω₀` to perceptibly shift the resonant
+peak. Plaits's `AnalogBassDrum` survives this in context — its
+excitation, output stage, and overall voice shape carry the impression
+of droop that the FM contribution alone does not. Lifted into
+isolation as a generic primitive mechanism, it does not stand up.
+
+Decision going forward:
+
+- **`drive` is retained on `Kick2` / `Tom2` and on `BridgedT`'s
+  `fm_offset` argument**, but the API contract is reframed: `drive`
+  primarily scales the output saturator, with a small residual
+  self-FM contribution that nudges the spectral content without
+  claiming an audible pitch envelope.
+- **Attack-FM is the canonical pitch-motion mechanism** for this
+  family. If a struck-resonator voice needs trigger-locked pitch
+  motion, route it through the attack-FM path.
+- **No droop in `Snare2` and the metal voices.** Real snare bodies
+  and metal voices do not noticeably droop; the previous draft's
+  framing of self-FM as a universal droop primitive does not survive
+  contact with the implementation. `Snare2` ships with `attack` only;
+  any pitch motion comes from the trigger-locked attack pulse.
+- **`Tom2`'s "amplitude-driven glide" framing is downgraded** to "a
+  brief attack-FM lift". The drafted analog-tom-style amplitude →
+  pitch envelope is not happening with this substrate. Acceptable —
+  the tom still sounds like a tom; the framing in the rustdoc and
+  the §"Nonlinearity and pitch droop" section above is now aspirational
+  rather than descriptive.
+
+The 2026-05-18 amendment's design framing stays in place as historical
+context; this section overrides its claims about self-FM. If a later
+substrate change (Newton-solved in-loop nonlinearity, op-amp-saturation
+WDF, etc.) revives a working droop mechanism, this section gets
+re-amended with that result.
 
 #### Excitation shape
 
