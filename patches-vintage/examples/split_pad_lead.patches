@@ -169,7 +169,7 @@ patch {
     # Stereo bus: pad panned a bit left, lead a bit right. Both go to
     # send_a → VReverb (gentle, shared tail). Only the lead drives send_b
     # into a stereo pair of VBbds for a widening analog delay.
-    module bus : StereoMixer([pad, lead]) {
+    module bus : Console([pad, lead]) {
         @pad:  { level: 0.55, pan: -0.35, send_a: 0.35, send_b: 0.0  },
         @lead: { level: 0.6,  pan:  0.3,  send_a: 0.3,  send_b: 0.2 },
     }
